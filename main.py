@@ -1,13 +1,16 @@
+from app.ingestion.pdf_parser import PDFParser
 from app.models.document import Document
 
 def main():
-    document = Document(
-        id='001',
-        title="Networking notes",
-        text="these are networking notes"
-    )
+    parser = PDFParser()
 
-    print(document)
+    document = parser.parse("data/sample.pdf")
+
+    print("=" * 50)
+    print(f"ID: {document.id}")
+    print(f"Title: {document.title}")
+    print("=" * 50)
+    print(document.text[:1000])
 
 
 if __name__ == "__main__":
