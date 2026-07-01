@@ -22,7 +22,7 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 | Data Models | Done |
 | Sentence Chunking | Done |
 | Embedding (Ollama) | Done |
-| Vector Store (Qdrant) | In Progress |
+| Vector Store (Qdrant) | Done |
 | Knowledge Graph (Neo4j) | Not started |
 | Hybrid Retrieval + RRF | Not started |
 | Reranking | Not started |
@@ -56,9 +56,9 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 
 ## In Progress
 
-### Vector Store (`app/vector_store/`) — branch: `feature/vector-store`
+### Vector Store (`app/vector_store/`) — branch: `feature/search-vector-store`
 - **`vector_store.py`** — `VectorStore` ABC with `add(chunks)` and `search(query_embedding, limit) -> list[EmbeddedChunk]`
-- **`qdrant_vector_store.py`** — `QdrantVectorStore` fully connects to Qdrant at `localhost:6333`. `add()` is implemented: lazy collection creation (cosine distance, vector size inferred from first chunk) + bulk upsert via `PointStruct`. **`search()` is a stub (`pass`)** — signature also diverges from ABC (`query: str` vs `query_embedding: list[float]`), needs resolution.
+- **`qdrant_vector_store.py`** — `QdrantVectorStore` fully connects to Qdrant at `localhost:6333`. `add()`: lazy collection creation (cosine distance, vector size inferred from first chunk) + bulk upsert via `PointStruct`. `search()`: queries Qdrant via `query_points`, reconstructs `EmbeddedChunk` objects from payload. Both methods complete and passing tests.
 
 ---
 
@@ -71,8 +71,6 @@ Placeholder directories exist for all of these (empty, no code yet):
 - **`app/retrieval/`** — hybrid retrieval (vector + graph)
 - **`app/reranking/`** — cross-encoder or LLM-based reranker
 - **`app/generation/`** — answer generation via Ollama LLM
-- **`app/database/`** — DB layer (purpose TBD)
-- **`app/utils/`** — shared utilities
 - **`app/utils/`** — shared utilities
 
 ---
@@ -89,10 +87,12 @@ Placeholder directories exist for all of these (empty, no code yet):
 
 ## Testing
 
-- **`conftest.py`** — empty file at project root; makes pytest add the root to `sys.path` so `app.*` imports resolve
+- **`pytest.ini`** — sets `pythonpath = .` so `app.*` imports resolve when running pytest from the project root
+- **`tests/conftest.py`** — shared `vector_store` fixture with uuid-based collection name; handles setup and teardown for both test files
 - **`tests/data/sample_graphrag_document.pdf`** — test fixture PDF
-- **`tests/test_ingestion_pipeline.py`** — integration test covering the full pipeline: parse → chunk → embed → vector store `add` + count assertion. **Passing.**
-- Run tests with `.venv/bin/pytest` (not system pytest) since all dependencies live in the venv
+- **`tests/test_ingestion_pipeline.py`** — integration test: parse → chunk → embed → `add()` + count assertion. Passing.
+- **`tests/test_vector_store.py`** — integration tests for `add()` + `search()`: verifies collection creation, result structure (`EmbeddedChunk` fields), and empty-list no-op. Passing.
+- Run tests with `pytest tests/ -v`
 
 ---
 

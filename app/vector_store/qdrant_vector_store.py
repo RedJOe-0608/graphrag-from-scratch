@@ -1,6 +1,8 @@
+import re
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
+from app.models.chunk import Chunk
 from app.models.embedded_chunk import EmbeddedChunk
 from app.vector_store.vector_store import VectorStore
 
@@ -47,6 +49,7 @@ class QdrantVectorStore(VectorStore):
                 id=embedded_chunk.chunk.id,
                 vector=embedded_chunk.embedding,
                 payload={
+                    "chunk_id": embedded_chunk.chunk.id,
                     "document_id": embedded_chunk.chunk.document_id,
                     "text": embedded_chunk.chunk.text,
                 },
@@ -60,5 +63,32 @@ class QdrantVectorStore(VectorStore):
             points=points
         )
 
-    def search(self, query: str, k: int = 10) -> list[EmbeddedChunk]:
-        pass
+    def search(self, query_embedding: list[float], limit: int = 5) -> list[EmbeddedChunk]:
+        """
+        Search the vector store for the most similar chunks.
+        """
+
+        response = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_embedding,
+            limit=limit,
+            with_payload=True,
+            with_vectors=True,
+        )
+
+        embedded_chunks = []
+
+        for point in response.points:
+            payload = point.payload
+            embedded_chunks.append(
+                EmbeddedChunk(
+                    chunk=Chunk(
+                        id=payload["chunk_id"],
+                        document_id=payload["document_id"],
+                        text=payload["text"],
+                    ),
+                    embedding=point.vector,
+                )
+            )
+
+        return embedded_chunks
