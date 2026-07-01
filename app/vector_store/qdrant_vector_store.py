@@ -1,7 +1,7 @@
-import re
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
+from app.config.app_config import QdrantConfig
 from app.models.chunk import Chunk
 from app.models.embedded_chunk import EmbeddedChunk
 from app.vector_store.vector_store import VectorStore
@@ -10,40 +10,40 @@ from app.vector_store.vector_store import VectorStore
 class QdrantVectorStore(VectorStore):
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 6333,
-        collection_name: str = "documents"
+        config: QdrantConfig,
+        client: QdrantClient | None = None,
     ) -> None:
-        self.collection_name = collection_name
-        self.client = QdrantClient(
-            host=host,
-            port=port
+        self.collection_name = config.collection
+
+        self.client = client or QdrantClient(
+            host=config.host,
+            port=config.port,
         )
 
-    def _create_collection_if_not_exists(self, vector_size: int) -> None:
+    def _create_collection_if_not_exists(
+        self,
+        vector_size: int,
+    ) -> None:
         if not self.client.collection_exists(self.collection_name):
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(
                     size=vector_size,
-                    distance=Distance.COSINE
-                )
+                    distance=Distance.COSINE,
+                ),
             )
 
-    def add(self, embedded_chunks: list[EmbeddedChunk]) -> None:
-        """
-        Add a list of embedded chunks to the vector store.
-        """
-
+    def add(
+        self,
+        embedded_chunks: list[EmbeddedChunk],
+    ) -> None:
         if not embedded_chunks:
             return
 
         vector_size = len(embedded_chunks[0].embedding)
 
-        # Lazy collection creation.
         self._create_collection_if_not_exists(vector_size)
 
-        # Convert EmbeddedChunks to PointStructs
         points = [
             PointStruct(
                 id=embedded_chunk.chunk.id,
@@ -57,17 +57,16 @@ class QdrantVectorStore(VectorStore):
             for embedded_chunk in embedded_chunks
         ]
 
-        # Upsert the points into the collection
         self.client.upsert(
             collection_name=self.collection_name,
-            points=points
+            points=points,
         )
 
-    def search(self, query_embedding: list[float], limit: int = 5) -> list[EmbeddedChunk]:
-        """
-        Search the vector store for the most similar chunks.
-        """
-
+    def search(
+        self,
+        query_embedding: list[float],
+        limit: int = 5,
+    ) -> list[EmbeddedChunk]:
         response = self.client.query_points(
             collection_name=self.collection_name,
             query=query_embedding,
@@ -76,19 +75,14 @@ class QdrantVectorStore(VectorStore):
             with_vectors=True,
         )
 
-        embedded_chunks = []
-
-        for point in response.points:
-            payload = point.payload
-            embedded_chunks.append(
-                EmbeddedChunk(
-                    chunk=Chunk(
-                        id=payload["chunk_id"],
-                        document_id=payload["document_id"],
-                        text=payload["text"],
-                    ),
-                    embedding=point.vector,
-                )
+        return [
+            EmbeddedChunk(
+                chunk=Chunk(
+                    id=point.payload["chunk_id"],
+                    document_id=point.payload["document_id"],
+                    text=point.payload["text"],
+                ),
+                embedding=point.vector,
             )
-
-        return embedded_chunks
+            for point in response.points
+        ]
