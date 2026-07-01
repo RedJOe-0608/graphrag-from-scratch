@@ -1,0 +1,19 @@
+import yaml
+
+from app.config.app_config import (
+    AppConfig,
+    Neo4jConfig,
+    OllamaConfig,
+    QdrantConfig,
+)
+
+
+def load_app_config(path: str) -> AppConfig:
+    with open(path, "r") as file:
+        config = yaml.safe_load(file)
+
+    return AppConfig(
+        neo4j=Neo4jConfig(**config["neo4j"]),
+        ollama=OllamaConfig(**config["ollama"]),
+        qdrant=QdrantConfig(**config["qdrant"]),
+    )
