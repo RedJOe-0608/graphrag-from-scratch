@@ -1,6 +1,6 @@
 from app.chunking.docling_chunker import DoclingChunker
 from app.chunking.sentence_chunker import SentenceChunker
-from app.config.graph_schema_loader import load_graph_schema
+from app.config.schema_loader import load_graph_schema
 from app.embeddings.ollama_embedder import OllamaEmbedder
 from app.ingestion.docling_parser import DoclingParser
 from app.ingestion.pdf_parser import PDFParser
