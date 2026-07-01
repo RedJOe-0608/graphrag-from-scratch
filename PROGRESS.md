@@ -73,7 +73,7 @@ Placeholder directories exist for all of these (empty, no code yet):
 - **`app/generation/`** — answer generation via Ollama LLM
 - **`app/database/`** — DB layer (purpose TBD)
 - **`app/utils/`** — shared utilities
-- **`tests/`** — test suite (directory exists, no tests written)
+- **`app/utils/`** — shared utilities
 
 ---
 
@@ -84,6 +84,15 @@ Placeholder directories exist for all of these (empty, no code yet):
 | `pymupdf` | PDF parsing |
 | `ollama` | Embedding + (future) LLM generation |
 | `qdrant-client` | Vector store |
+
+---
+
+## Testing
+
+- **`conftest.py`** — empty file at project root; makes pytest add the root to `sys.path` so `app.*` imports resolve
+- **`tests/data/sample_graphrag_document.pdf`** — test fixture PDF
+- **`tests/test_ingestion_pipeline.py`** — integration test covering the full pipeline: parse → chunk → embed → vector store `add` + count assertion. **Passing.**
+- Run tests with `.venv/bin/pytest` (not system pytest) since all dependencies live in the venv
 
 ---
 
