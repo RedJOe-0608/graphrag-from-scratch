@@ -1,0 +1,12 @@
+entity_types:
+  - Person
+  - Organization
+  - Location
+  - Product
+  - Event
+
+relationship_types:
+  - WORKS_AT
+  - LOCATED_IN
+  - CREATED
+  - OWNS
