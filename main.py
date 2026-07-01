@@ -1,14 +1,18 @@
+from app.chunking.docling_chunker import DoclingChunker
 from app.chunking.sentence_chunker import SentenceChunker
 from app.embeddings.ollama_embedder import OllamaEmbedder
+from app.ingestion.docling_parser import DoclingParser
 from app.ingestion.pdf_parser import PDFParser
 from app.models.document import Document
 
 def main():
-    parser = PDFParser()
-    chunker = SentenceChunker()
+    parser = DoclingParser()
+    chunker = DoclingChunker()
     embedder = OllamaEmbedder()
 
-    # document = parser.parse("data/sample.pdf")
+    document = parser.parse("tests/data/sample_graphrag_document.pdf")
+
+    print(document)
 
     # chunks = chunker.chunk(document)
 
