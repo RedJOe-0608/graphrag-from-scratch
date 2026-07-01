@@ -8,17 +8,17 @@ def main():
     chunker = SentenceChunker()
     embedder = OllamaEmbedder()
 
-    document = parser.parse("data/sample.pdf")
+    # document = parser.parse("data/sample.pdf")
 
-    chunks = chunker.chunk(document)
+    # chunks = chunker.chunk(document)
 
-    print(f"Created {len(chunks)} chunks\n")
+    # print(f"Created {len(chunks)} chunks\n")
 
-    embdedded_chunks = embedder.embed(chunks=chunks)
+    # embdedded_chunks = embedder.embed(chunks=chunks)
 
-    first_embdedded_chunk = embdedded_chunks[0]
-    print(first_embdedded_chunk.chunk.text)
-    print(first_embdedded_chunk.embedding)
+    # first_embdedded_chunk = embdedded_chunks[0]
+    # print(first_embdedded_chunk.chunk.text)
+    # print(first_embdedded_chunk.embedding)
 
 
 if __name__ == "__main__":
