@@ -70,7 +70,7 @@ class QdrantVectorStore(VectorStore):
 
         response = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_embedding,
+            query=query_embedding,
             limit=limit,
             with_payload=True,
             with_vectors=True,
