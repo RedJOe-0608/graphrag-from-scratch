@@ -21,6 +21,7 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 | Document Ingestion | Done |
 | Data Models | Done |
 | Sentence Chunking | Done |
+| Docling Parser + Chunker | Done |
 | Embedding (Ollama) | Done |
 | Vector Store (Qdrant) | Done |
 | Knowledge Graph (Neo4j) | Not started |
@@ -34,16 +35,19 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 
 ### Data Models (`app/models/`)
 - **`document.py`** — `Document` dataclass: `id`, `title`, `text`
+- **`structured_docling_document.py`** — `StructuredDoclingDocument` dataclass: extends `Document`, adds `docling_doc: DoclingDocument` for use with `DoclingChunker`
 - **`chunk.py`** — `Chunk` dataclass: `id`, `document_id`, `text`
 - **`embedded_chunk.py`** — `EmbeddedChunk` dataclass: wraps `Chunk` + `embedding: list[float]`
 
 ### Ingestion (`app/ingestion/`)
 - **`parser.py`** — `Parser` ABC with `parse(path) -> Document`
 - **`pdf_parser.py`** — `PDFParser` using PyMuPDF (`fitz`); extracts text page-by-page, joins with newlines, assigns a UUID
+- **`docling_parser.py`** — `DoclingParser` using Docling; layout-aware parsing with TableFormer for tables. OCR disabled (not needed for digital PDFs). Returns `StructuredDoclingDocument` with markdown export in `text` and the full `DoclingDocument` object in `docling_doc`.
 
 ### Chunking (`app/chunking/`)
 - **`chunker.py`** — `Chunker` ABC with `chunk(document) -> list[Chunk]`
 - **`sentence_chunker.py`** — `SentenceChunker`; naive period-split, strips blanks, assigns UUID per chunk. (No overlap or sliding window yet.)
+- **`docling_chunker.py`** — `DoclingChunker`; uses Docling's `HybridChunker` with `nomic-embed-text` tokenizer. Structure-aware splitting (sections → paragraphs → sentences). Guaranteed max 512 tokens per chunk. Tables treated as atomic units. Requires `StructuredDoclingDocument` as input.
 
 ### Embedding (`app/embeddings/`)
 - **`embedder.py`** — `Embedder` ABC with `embed(chunks) -> list[EmbeddedChunk]`
@@ -79,7 +83,9 @@ Placeholder directories exist for all of these (empty, no code yet):
 
 | Package | Purpose |
 |---|---|
-| `pymupdf` | PDF parsing |
+| `pymupdf` | PDF parsing (PDFParser) |
+| `docling` | Layout-aware PDF parsing with table extraction (DoclingParser) |
+| `transformers` | Tokenizer for token-accurate chunk size measurement |
 | `ollama` | Embedding + (future) LLM generation |
 | `qdrant-client` | Vector store |
 
@@ -99,6 +105,7 @@ Placeholder directories exist for all of these (empty, no code yet):
 ## Notes
 
 - All major components follow an ABC + concrete implementation pattern, making them swappable.
-- No semantic chunking yet — `SentenceChunker` is a placeholder; semantic chunking is a stated goal.
+- `SentenceChunker` retained as a lightweight fallback; `DoclingChunker` is the production path for complex PDFs.
+- `DoclingParser` and `DoclingChunker` are paired — the structured Docling object flows between them via `StructuredDoclingDocument`.
 - `main.py` is a dev harness, not a CLI or API entry point.
 - `data/sample.pdf` is the test document used during development.
