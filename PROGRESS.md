@@ -50,7 +50,7 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 - **`ollama_embedder.py`** — `OllamaEmbedder`; calls Ollama's `embed` API in a single batched request. Default model: `nomic-embed-text`. Raises `RuntimeError` on `ResponseError`.
 
 ### Entry Point
-- **`main.py`** — Wires PDFParser → SentenceChunker → OllamaEmbedder and prints the first embedded chunk. Used for manual smoke-testing.
+- **`main.py`** — Instantiates PDFParser, SentenceChunker, OllamaEmbedder. Pipeline logic currently commented out (in-progress refactor to integrate vector store).
 
 ---
 
@@ -58,7 +58,7 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 
 ### Vector Store (`app/vector_store/`) — branch: `feature/vector-store`
 - **`vector_store.py`** — `VectorStore` ABC with `add(chunks)` and `search(query_embedding, limit) -> list[EmbeddedChunk]`
-- **`qdrant_vector_store.py`** — `QdrantVectorStore` constructor done (connects to Qdrant at `localhost:6333`, collection `documents`). **`add` and `search` methods not yet implemented.**
+- **`qdrant_vector_store.py`** — `QdrantVectorStore` fully connects to Qdrant at `localhost:6333`. `add()` is implemented: lazy collection creation (cosine distance, vector size inferred from first chunk) + bulk upsert via `PointStruct`. **`search()` is a stub (`pass`)** — signature also diverges from ABC (`query: str` vs `query_embedding: list[float]`), needs resolution.
 
 ---
 
