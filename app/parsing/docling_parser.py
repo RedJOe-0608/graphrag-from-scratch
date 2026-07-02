@@ -2,7 +2,7 @@ from pathlib import Path
 import uuid
 
 from docling.datamodel.base_models import InputFormat
-from app.ingestion.parser import Parser
+from app.parsing.parser import Parser
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 

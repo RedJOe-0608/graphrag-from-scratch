@@ -9,22 +9,22 @@ from app.graph_store.graph_store import GraphStore
 
 
 class Neo4jGraphStore(GraphStore):
-   def __init__(
-    self,
-    config: Neo4jConfig,
-    schema: GraphSchema,
-):
-    self.driver = GraphDatabase.driver(
-        config.uri,
-        auth=(
-            config.username,
-            config.password,
-        ),
-    )
+    def __init__(
+        self,
+        config: Neo4jConfig,
+        schema: GraphSchema,
+    ):
+        self.driver = GraphDatabase.driver(
+            config.uri,
+            auth=(
+                config.username,
+                config.password,
+            ),
+        )
 
-    self.allowed_relationships = set(schema.relationship_types)
+        self.allowed_relationships = set(schema.relationship_types)
 
-    self._create_constraints()
+        self._create_constraints()
 
     def __enter__(self):
         return self
