@@ -1,12 +1,14 @@
+from app.config.app_config_loader import load_app_config
 from app.config.graph_schema_loader import load_graph_schema
 from app.extraction.ollama_extractor import OllamaExtractor
 from app.models.chunk import Chunk
 
 
 def test_ollama_extractor():
+    config = load_app_config("config/app.yaml")
     schema = load_graph_schema("config/graph.yaml")
 
-    extractor = OllamaExtractor(schema)
+    extractor = OllamaExtractor(config=config.ollama, schema=schema)
 
     chunk = Chunk(
         id="chunk_1",

@@ -49,8 +49,8 @@ Your task is to extract entities and relationships from the provided text.
     {{
       "source": "sam_altman",
       "target": "openai",
-      "relationship_type": "CEO_OF",
-      "description": "Sam Altman is the CEO of OpenAI"
+      "relationship_type": "WORKS_AT",
+      "description": "Sam Altman works at OpenAI"
     }}
   ]
 }}

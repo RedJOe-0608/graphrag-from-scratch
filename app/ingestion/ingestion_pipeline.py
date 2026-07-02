@@ -37,11 +37,11 @@ class IngestionPipeline:
         for chunk in chunks:
             try:
                 knowledge = self.extractor.extract(chunk)
+                self.graph_store.add(knowledge)
             except ValueError as e:
                 failures.append(f"chunk {chunk.id}: {e}")
                 continue
 
-            self.graph_store.add(knowledge)
             entity_count += len(knowledge.entities)
             relationship_count +=len(knowledge.relationships)
 

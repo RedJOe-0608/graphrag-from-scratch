@@ -1,11 +1,12 @@
 from ollama import Client
+from pydantic import BaseModel
 
 from app.config.app_config import OllamaConfig
 from app.config.graph_schema import GraphSchema
 from app.extraction.extractor import Extractor
 from app.extraction.prompt_builder import build_prompt
 from app.extraction.schemas.extracted_knowledge_response import (
-    ExtractedKnowledgeResponse,
+    build_extracted_knowledge_response,
 )
 from app.graph.entity import Entity
 from app.graph.extracted_knowledge import ExtractedKnowledge
@@ -25,6 +26,7 @@ class OllamaExtractor(Extractor):
         self.client = client or Client(
             host=config.host,
         )
+        self.response_model = build_extracted_knowledge_response(schema)
 
     def extract(self, chunk: Chunk) -> ExtractedKnowledge:
         prompt = build_prompt(chunk, self.schema)
@@ -44,7 +46,7 @@ class OllamaExtractor(Extractor):
                     "content": prompt,
                 },
             ],
-            format=ExtractedKnowledgeResponse.model_json_schema(), # generates the rulebook for ollama's constrained decoding.
+            format=self.response_model.model_json_schema(), # generates the rulebook for ollama's constrained decoding.
             options={
                 "temperature": 0,
             },
@@ -54,10 +56,8 @@ class OllamaExtractor(Extractor):
         # 2. Network failure. 
         # In both of the cases above, the model_validate_json would raise Pydantic's own ValidationError
         try:
-            validated_response = (
-                ExtractedKnowledgeResponse.model_validate_json(
-                    response.message.content
-                )
+            validated_response = self.response_model.model_validate_json(
+                response.message.content
             )
         except Exception as e:
             raise ValueError(
@@ -73,7 +73,7 @@ class OllamaExtractor(Extractor):
 
     @staticmethod
     def _build_entities(
-        validated_response: ExtractedKnowledgeResponse,
+        validated_response: BaseModel,
     ) -> list[Entity]:
         return [
             Entity(
@@ -87,7 +87,7 @@ class OllamaExtractor(Extractor):
 
     @staticmethod
     def _build_relationships(
-        validated_response: ExtractedKnowledgeResponse,
+        validated_response: BaseModel,
     ) -> list[Relationship]:
         return [
             Relationship(

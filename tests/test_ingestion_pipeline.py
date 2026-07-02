@@ -1,25 +1,27 @@
-from app.parsing.pdf_parser import PDFParser
-from app.chunking.sentence_chunker import SentenceChunker
+from app.chunking.docling_chunker import DoclingChunker
 from app.embeddings.ollama_embedder import OllamaEmbedder
+from app.extraction.ollama_extractor import OllamaExtractor
+from app.ingestion.ingestion_pipeline import IngestionPipeline
+from app.parsing.docling_parser import DoclingParser
 
 
-def test_ingestion_pipeline(vector_store):
-    parser = PDFParser()
-    chunker = SentenceChunker()
-    embedder = OllamaEmbedder()
+def test_ingestion_pipeline(vector_store, graph_store, app_config, graph_schema):
 
-    document = parser.parse("tests/data/sample_graphrag_document.pdf")
-    assert isinstance(document.id, str) and document.id
-    assert isinstance(document.text, str) and document.text
+    pipeline = IngestionPipeline(
+        parser=DoclingParser(),
+        chunker=DoclingChunker(),
+        embedder=OllamaEmbedder(),
+        extractor=OllamaExtractor(config=app_config.ollama, schema=graph_schema),
+        vector_store=vector_store,
+        graph_store=graph_store,
+    )
 
-    chunks = chunker.chunk(document)
-    assert len(chunks) > 0
+    result = pipeline.ingest("tests/data/sample_graphrag_document.pdf")
 
-    embedded_chunks = embedder.embed(chunks)
-    assert len(chunks) == len(embedded_chunks)
-    assert len(embedded_chunks[0].embedding) > 0
+    assert result.chunk_count > 0
+    assert result.entity_count > 0
+    assert all(isinstance(f, str) for f in result.failures)
 
-    vector_store.add(embedded_chunks)
+    vector_count = vector_store.client.count(collection_name=vector_store.collection_name)
+    assert vector_count.count == result.chunk_count
 
-    count = vector_store.client.count(collection_name=vector_store.collection_name)
-    assert count.count == len(embedded_chunks)
