@@ -13,7 +13,7 @@ class QdrantVectorStore(VectorStore):
         config: QdrantConfig,
         client: QdrantClient | None = None,
     ) -> None:
-        self.collection_name = config.collection
+        self.collection_name = config.collection_name
 
         self.client = client or QdrantClient(
             host=config.host,

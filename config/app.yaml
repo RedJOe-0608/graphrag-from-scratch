@@ -10,4 +10,4 @@ ollama:
 qdrant:
   host: localhost
   port: 6333
-  collection: graphrag
+  collection_name: graphrag

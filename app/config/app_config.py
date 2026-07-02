@@ -18,7 +18,7 @@ class OllamaConfig:
 class QdrantConfig:
     host: str
     port: int
-    collection: str
+    collection_name: str
 
 
 @dataclass

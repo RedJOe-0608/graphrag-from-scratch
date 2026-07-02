@@ -44,12 +44,15 @@ class OllamaExtractor(Extractor):
                     "content": prompt,
                 },
             ],
-            format=ExtractedKnowledgeResponse.model_json_schema(),
+            format=ExtractedKnowledgeResponse.model_json_schema(), # generates the rulebook for ollama's constrained decoding.
             options={
                 "temperature": 0,
             },
         )
 
+        # 1. The model hit max_token limit. So incomplete json response.
+        # 2. Network failure. 
+        # In both of the cases above, the model_validate_json would raise Pydantic's own ValidationError
         try:
             validated_response = (
                 ExtractedKnowledgeResponse.model_validate_json(

@@ -1,6 +1,6 @@
 from neo4j import GraphDatabase
 
-from app.config.app_config import AppConfig
+from app.config.app_config import Neo4jConfig
 from app.config.graph_schema import GraphSchema
 from app.graph.entity import Entity
 from app.graph.extracted_knowledge import ExtractedKnowledge
@@ -11,14 +11,14 @@ from app.graph_store.graph_store import GraphStore
 class Neo4jGraphStore(GraphStore):
    def __init__(
     self,
-    config: AppConfig,
+    config: Neo4jConfig,
     schema: GraphSchema,
 ):
     self.driver = GraphDatabase.driver(
-        config.neo4j.uri,
+        config.uri,
         auth=(
-            config.neo4j.username,
-            config.neo4j.password,
+            config.username,
+            config.password,
         ),
     )
 

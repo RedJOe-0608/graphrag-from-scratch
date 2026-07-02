@@ -1,4 +1,4 @@
-from app.config.schema_loader import load_graph_schema
+from app.config.graph_schema_loader import load_graph_schema
 from app.extraction.ollama_extractor import OllamaExtractor
 from app.models.chunk import Chunk
 
