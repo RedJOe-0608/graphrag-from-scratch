@@ -1,4 +1,4 @@
-from app.ingestion.pdf_parser import PDFParser
+from app.parsing.pdf_parser import PDFParser
 from app.chunking.sentence_chunker import SentenceChunker
 from app.embeddings.ollama_embedder import OllamaEmbedder
 

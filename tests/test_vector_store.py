@@ -1,7 +1,7 @@
 import uuid
 from app.chunking.sentence_chunker import SentenceChunker
 from app.embeddings.ollama_embedder import OllamaEmbedder
-from app.ingestion.pdf_parser import PDFParser
+from app.parsing.pdf_parser import PDFParser
 from app.models.chunk import Chunk
 from app.models.embedded_chunk import EmbeddedChunk
 

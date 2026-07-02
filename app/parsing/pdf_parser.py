@@ -3,7 +3,7 @@ import uuid
 
 import fitz
 
-from app.ingestion.parser import Parser
+from app.parsing.parser import Parser
 from app.models.document import Document
 
 
