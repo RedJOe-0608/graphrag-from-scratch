@@ -25,4 +25,30 @@ class IngestionPipeline:
         self.graph_store = graph_store
 
     def ingest(self, path: str) -> IngestionResult:
-        raise NotImplementedError
+        document = self.parser.parse(path)
+        chunks = self.chunker.chunk(document)
+        embedded_chunks = self.embedder.embed(chunks)
+        self.vector_store.add(embedded_chunks)
+
+        entity_count = 0
+        relationship_count = 0
+        failures = []
+
+        for chunk in chunks:
+            try:
+                knowledge = self.extractor.extract(chunk)
+            except ValueError as e:
+                failures.append(f"chunk {chunk.id}: {e}")
+                continue
+
+            self.graph_store.add(knowledge)
+            entity_count += len(knowledge.entities)
+            relationship_count +=len(knowledge.relationships)
+
+        return IngestionResult(
+            document=document,
+            chunk_count=len(chunks),
+            entity_count=entity_count,
+            relationship_count=relationship_count,
+            failures=failures,
+        )
