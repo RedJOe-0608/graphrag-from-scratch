@@ -28,11 +28,13 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 | App Configuration (`AppConfig`, `GraphSchema`) | Done |
 | Entity/Relationship Extraction (Ollama, structured JSON, enum-constrained) | Done |
 | Knowledge Graph (Neo4j) | Done |
-| **IngestionPipeline** (parse → chunk → embed → vector store; extract → graph store) | **Done** |
-| **Entity Resolution** — data model + storage + similarity search | **Phase 1 done, Phase 2 (resolver) next** |
+| **IngestionPipeline** (parse → chunk → embed → vector store; extract → resolve → graph store) | **Done** |
+| **Entity Resolution** — `EntityResolver`, multi-candidate LLM matching, provenance | **Done (Phase 1 + Phase 2)** |
+| **Relationship quality** — enriched schema (endpoints) + endpoint-type validation | **Done** |
+| **OpenAI extraction + matching** (`gpt-4o` / `gpt-4o-mini`) | **Done** |
 | Hybrid Retrieval + RRF | Not started |
 | Reranking | Not started |
-| Answer Generation (Ollama LLM) | Not started |
+| Answer Generation | Not started |
 
 **Testing note:** per user direction (2026-07-03), the project is prioritizing end-to-end functionality over test coverage for now — tests are fixed only when they block forward progress, not proactively expanded per feature. A dedicated testing pass will happen once the app works end-to-end.
 
@@ -53,10 +55,10 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 
 ### Ingestion Pipeline (`app/ingestion/`)
 - **`ingestion_result.py`** — `IngestionResult` dataclass: `document`, `chunk_count`, `entity_count`, `relationship_count`, `failures: list[str]`. The final receipt returned once a document's full lifecycle (vector + graph) completes.
-- **`ingestion_pipeline.py`** — `IngestionPipeline(parser, chunker, embedder, extractor, vector_store, graph_store)`, all six collaborators injected against their ABCs. `ingest(path) -> IngestionResult`:
-  1. `parse → chunk → embed (batch) → vector_store.add` — vector-side flow, no error handling (a failure here has no natural partial-success mode).
-  2. For each chunk: `extractor.extract(chunk)` then `graph_store.add(knowledge)`, both wrapped in one `try/except ValueError` — **skip-and-continue** per chunk (a bad chunk is recorded in `failures` and doesn't abort the document or the chunks around it).
-  3. Assembles and returns `IngestionResult` with real entity/relationship counts (summed from `len(knowledge.entities/relationships)`, not per-chunk increments, since a chunk can yield zero-to-many of each).
+- **`ingestion_pipeline.py`** — `IngestionPipeline(parser, chunker, embedder, extractor, vector_store, resolver)` — **now takes an `EntityResolver` instead of a `GraphStore`** (the resolver holds the graph store). `ingest(path) -> IngestionResult`:
+  1. `parse → chunk → embed (batch) → vector_store.add` — vector-side flow, no error handling.
+  2. For each chunk: `extractor.extract(chunk)` then `resolver.resolve_knowledge(knowledge)` (resolve-then-write per chunk), wrapped in `try/except ValueError` — **skip-and-continue**. `relationship_count` uses the count of relationships actually written by the resolver.
+  3. Assembles and returns `IngestionResult`.
 
 ### Chunking (`app/chunking/`)
 - **`chunker.py`** — `Chunker` ABC with `chunk(document) -> list[Chunk]`
@@ -74,36 +76,42 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 ### Configuration (`app/config/`, `config/`)
 - **`app_config.py`** — dataclasses: `Neo4jConfig` (uri, username, password), `OllamaConfig` (model, host), `QdrantConfig` (host, port, collection), and top-level `AppConfig` bundling all three.
 - **`app_config_loader.py`** — `load_app_config(path) -> AppConfig`; reads `config/app.yaml`.
-- **`config/app.yaml`** — Neo4j (bolt://localhost:7687), Ollama (`qwen2.5:3b` model for extraction, host `http://localhost:11434`), Qdrant (localhost:6333, collection `graphrag`).
-- **`graph_schema.py`** — `GraphSchema` dataclass: `entity_types: list[str]`, `relationship_types: list[str]`.
-- **`graph_schema_loader.py`** — `load_graph_schema(path) -> GraphSchema`; reads `config/graph.yaml`.
-- **`config/graph.yaml`** — allowed types: entities (Person, Organization, Location, Product, Event), relationships (WORKS_AT, LOCATED_IN, CREATED, OWNS).
+- **`config/app.yaml`** — Neo4j (bolt://localhost:7687), Ollama (`qwen2.5:3b`, host `http://localhost:11434` — now used for the **fallback** extractor/matcher; embeddings use `nomic-embed-text`), Qdrant (localhost:6333, collection `graphrag`). **Production extraction/matching runs on OpenAI** (`gpt-4o`), wired directly in `main.py` with the key read from `.env` (`OPENAI_API_KEY`, gitignored) — not from `app.yaml`.
+- **`graph_schema.py`** — `RelationshipEndpoints` dataclass (`source: list[str]`, `target: list[str]`) + `GraphSchema` dataclass: `entity_types: list[str]`, `relationship_types: list[str]` (names only — kept flat so the extraction enum and graph-store allowed-set consume it unchanged), **`relationship_endpoints: dict[str, RelationshipEndpoints]`** (legal source/target entity types per relationship, used for endpoint-type validation).
+- **`graph_schema_loader.py`** — `load_graph_schema(path) -> GraphSchema`; parses `config/graph.yaml`'s relationship dict into the name list + endpoints map.
+- **`config/graph.yaml`** — **enriched (2026-07-03)** from 4 → 12 relationship types, each declaring its `source`/`target` endpoint entity types. Entities: Person, Organization, Location, Product, Event. Relationships: WORKS_AT, LOCATED_IN, CREATED, OWNS, INVESTED_IN, PARTNERED_WITH, BOARD_MEMBER_OF, ACQUIRED, DISTRIBUTES, SUPPLIES, SPOKE_AT, ATTENDED. The extra types were added after observing the coarse 4-type set force distinct relations (investor stake, board seat, manufacturing partner) into `OWNS`/`WORKS_AT` catch-alls.
 
 ### Graph Models (`app/graph/`)
-- **`entity.py`** — `Entity` dataclass: `id`, `name`, `entity_type`, `description`, **`aliases: list[str]`** (default via `field(default_factory=list)` — NOT a bare `[]`, which would be a shared-mutable-default bug), **`embedding: list[float] | None`** (default `None`; populated by the entity resolver, not the extractor). Also has module-level `build_entity_embedding_text(entity) -> str`, which builds `f"{name}. {description}"` (description `None`-safe via `or ""`) — the exact text that gets embedded for similarity search. Deliberately excludes `entity_type` from the embedded text (adds no discriminating signal, diluted the vector); type is used as a query-time filter instead.
+- **`entity.py`** — `Entity` dataclass: `id`, `name`, `entity_type`, `description`, **`aliases: list[str]`** (`field(default_factory=list)`), **`embedding: list[float] | None`** (populated by the resolver), **`source_chunk_ids: list[str]`** (`field(default_factory=list)` — provenance: which chunk(s) the entity came from; stamped `[chunk.id]` at extraction, unioned on merge; for future citation/debugging). Module-level `build_entity_embedding_text(entity) -> str` builds `f"{name}. {description}"` — the text embedded for similarity search (type deliberately excluded, used as a query-time filter instead).
 - **`relationship.py`** — `Relationship` dataclass: `source` (entity id), `target` (entity id), `relationship_type`, `description`.
 - **`extracted_knowledge.py`** — `ExtractedKnowledge` dataclass: `source_chunk: Chunk`, `entities: list[Entity]`, `relationships: list[Relationship]`.
 
 ### Extraction (`app/extraction/`)
 - **`extractor.py`** — `Extractor` ABC with `extract(chunk) -> ExtractedKnowledge`.
-- **`prompt_builder.py`** — `build_prompt(chunk, schema) -> str`; builds a detailed v1 prompt with numbered rules (allowed types only, snake_case IDs, unique IDs, valid relationship references, no invention, JSON-only, no markdown wrapping), embeds allowed entity/relationship types from `GraphSchema`, and a worked JSON example. **Fixed 2026-07-03**: the worked example used to show `"relationship_type": "CEO_OF"` — a value outside the default schema's allowed types — which the model (`qwen2.5:3b`) tended to imitate directly, overriding rule #2. Example now uses `WORKS_AT`, an actually-allowed type.
-- **`ollama_extractor.py`** — `OllamaExtractor(config: OllamaConfig, schema: GraphSchema, client: Client | None = None)`. Builds `self.response_model` once at init via `build_extracted_knowledge_response(schema)` (schema-aware, enum-constrained). Calls Ollama chat API with `format=self.response_model.model_json_schema()`, `temperature=0`. Validates response via Pydantic, raises `ValueError` with raw content on parse/validation failure. Converts validated response into `Entity`/`Relationship` domain objects via `_build_entities`/`_build_relationships` (typed against `pydantic.BaseModel` now, since the response model is dynamic).
+- **`prompt_builder.py`** — `build_prompt(chunk, schema) -> str`; numbered rules + allowed types from `GraphSchema` + a worked JSON example. **Rule 5 strengthened (2026-07-03)** to force relationships to reference declared entities. **Rule 11 added (2026-07-03)** requires every entity to include a `description` (one or two sentences, grounded only in the text).
+- **`openai_extractor.py`** — **`OpenAIExtractor(schema, model="gpt-4o-mini", api_key=None)`** — the production extraction path (main.py uses `gpt-4o`). Uses OpenAI structured output (`beta.chat.completions.parse` with `build_extracted_knowledge_response(schema)`), `temperature=0`. Far better than the 3B: emits real descriptions, correct types, no example-copying (the 3B hallucinated `Sam Altman`/`OpenAI` from the prompt example). Relationships built via the shared `build_valid_relationships` validator.
+- **`ollama_extractor.py`** — `OllamaExtractor(config, schema, client=None)` — the local fallback, same structured-output pattern via Ollama. Also uses `build_valid_relationships`. Left working but not the default path.
+- **`relationship_validation.py`** — **`build_valid_relationships(validated_response, entities, schema)`** — shared by both extractors. Drops a relationship if (1) **self-consistency**: source/target isn't a declared entity in the chunk (no dangling refs Neo4j would silently drop), or (2) **endpoint types**: the source/target entity types aren't legal for the relationship type per `schema.relationship_endpoints` (e.g. a `WORKS_AT` pointing at a `Location` is dropped). This is what makes the extractor emit only valid, self-consistent knowledge.
+- **`schemas/`** — dynamic, enum-constrained Pydantic response models (`build_entity_response`, `build_relationship_response`, `build_extracted_knowledge_response`). **`entity_response.description` is now required (`(str, ...)`)** so the model cannot omit it. `entity_type`/`relationship_type` are `Literal[tuple(...)]` enums, so structurally impossible to emit a type outside the schema.
 - **`schemas/`** — Pydantic response models used only for Ollama structured-output validation (kept separate from the domain dataclasses in `app/graph/`). **Reworked 2026-07-03** from static classes into schema-aware factory functions, so `entity_type`/`relationship_type` are constrained to `Literal[tuple(schema.entity_types)]` / `Literal[tuple(schema.relationship_types)]` — Ollama's structured-output JSON schema now has a real `enum`, so it's structurally impossible for the model to emit a type outside the configured graph schema (previously `str`, which only constrained shape, not value — this is what let `CEO_OF` through in the first place):
   - `entity_response.py` — `build_entity_response(entity_types) -> type[BaseModel]`
   - `relationship_response.py` — `build_relationship_response(relationship_types) -> type[BaseModel]`
   - `extracted_knowledge_response.py` — `build_extracted_knowledge_response(schema: GraphSchema) -> type[BaseModel]`, composes the two above.
 
 ### Knowledge Graph (`app/graph_store/`)
-- **`graph_store.py`** — `GraphStore` ABC with `add(knowledge: ExtractedKnowledge)` and `clear()`.
+- **`graph_store.py`** — `GraphStore` ABC. Methods: `add(knowledge)`, `clear()`, and (added for entity resolution) **`find_similar_entities(entity_type, embedding, k=5) -> list[dict]`**, **`upsert_entity(entity)`** (create/update one entity by id), **`add_relationship(relationship)`** (create/update one edge), **`get_relationships(entity_id) -> list[dict]`** (a node's edges as `{direction, type, other_name}` — used to feed candidate structure to the matcher).
 - **`neo4j_graph_store.py`** — `Neo4jGraphStore(config: Neo4jConfig, schema: GraphSchema, embedding_dimensions: int)`. Connects via `neo4j.GraphDatabase.driver`, supports context manager (`__enter__`/`__exit__` closes driver). Creates a uniqueness constraint on `Entity.id` at init. `add()`: `MERGE`s entities in bulk (`UNWIND`), then merges each relationship individually with the relationship type interpolated into the Cypher query (validated against `schema.relationship_types` first — raises `ValueError` on unknown type, **not** an f-string injection risk since it's checked against an allowlist first). `clear()`: `MATCH (n) DETACH DELETE n`. **Fixed 2026-07-03**: the whole class body past `__init__`'s first line was mis-indented one level too deep, so `__enter__`/`__exit__`/`clear`/`add`/`_create_constraints`/`_merge_*` were all nested as local functions *inside* `__init__` instead of being class methods — `Neo4jGraphStore` couldn't be instantiated at all (`TypeError: Can't instantiate abstract class... without an implementation for 'add', 'clear'`). Re-indented; logic unchanged. Known partial-write caveat: `add()` merges entities and then relationships one at a time — if a later relationship in the loop fails, earlier entities/relationships for that chunk are already committed even though the pipeline records the whole chunk as a failure. Not yet addressed (would need one transaction per chunk, or upfront validation of all relationship types before writing anything).
   - **Entity resolution additions (2026-07-03)**:
     - `embedding_dimensions: int` constructor param — **not hardcoded** (matches `QdrantVectorStore`'s pattern of deriving vector size from a real embedding rather than a literal). Composition root should compute it once via `len(embedder.embed_text(["probe"])[0])` and pass it in; `Neo4jGraphStore` stays ignorant of *how* it was derived. Currently tested by passing `768` directly (matches `nomic-embed-text`'s real output size) — **composition root wiring not done yet**, see Where to Pick Up.
     - `_create_vector_index(dimensions)` — creates `entity_embedding` vector index (cosine similarity) on `Entity.embedding`, called from `__init__` after `_create_constraints()`. Verified `ONLINE` via `SHOW VECTOR INDEXES`.
-    - `_merge_entities` now also writes `e.aliases` and `e.embedding`.
-    - `find_similar_entities(entity_type, embedding, k=5) -> list[dict]` — **deliberately does NOT use the vector index.** Does exact cosine similarity (`vector.similarity.cosine`) over `MATCH (e:Entity {type: $entity_type})`, i.e. filter-by-type-first then brute-force score, `O(n)` over entities of that type. This was a deliberate choice over ANN-index-then-filter: Neo4j's `db.index.vector.queryNodes` finds top-k over the *whole* index before any type filter applies, which can starve results when one type dominates the index (post-filtering can return fewer than k, or wrong candidates, under type skew). Exact `MATCH`-first search avoids that correctness bug entirely at the cost of not using the ANN index. Comment left in code flagging the `O(n)` tradeoff as a deferred optimization. **Verified working** via ad hoc script: Sam Altman / Samuel Altman (Person) correctly ranked highest similarity to each other (0.88, 0.86) with Coca-Cola (Org) correctly excluded by the type filter.
+    - `_merge_entities` now also writes `e.aliases`, `e.embedding`, and `e.source_chunk_ids`.
+    - **`upsert_entity(entity)`** reuses `_merge_entities` with a single-item list; **`add_relationship(relationship)`** reuses `_merge_relationship`; **`get_relationships(entity_id)`** does a bidirectional `MATCH (e)-[r]-(other)` returning `{type, direction, other_name}`. These three are the storage primitives the `EntityResolver` composes.
+    - `find_similar_entities(entity_type, embedding, k=5) -> list[dict]` (now also returns `source_chunk_ids`) — **deliberately does NOT use the vector index.** Does exact cosine similarity (`vector.similarity.cosine`) over `MATCH (e:Entity {type: $entity_type})`, i.e. filter-by-type-first then brute-force score, `O(n)` over entities of that type. This was a deliberate choice over ANN-index-then-filter: Neo4j's `db.index.vector.queryNodes` finds top-k over the *whole* index before any type filter applies, which can starve results when one type dominates the index (post-filtering can return fewer than k, or wrong candidates, under type skew). Exact `MATCH`-first search avoids that correctness bug entirely at the cost of not using the ANN index. Comment left in code flagging the `O(n)` tradeoff as a deferred optimization. **Verified working** via ad hoc script: Sam Altman / Samuel Altman (Person) correctly ranked highest similarity to each other (0.88, 0.86) with Coca-Cola (Org) correctly excluded by the type filter.
     - The vector index itself (`entity_embedding`) is currently unused by any query — built for potential future use, not a wasted step.
 
-### Entity Resolution — Design (locked in, 2026-07-03)
+### Entity Resolution — Design (original, 2026-07-03) — ⚠️ SUPERSEDED
+
+> This is the *original locked-in design*, kept for the reasoning/rationale. **The actual implementation diverged** (no auto-merge band, multi-candidate matching, LLM-picks-id not yes/no, OpenAI not 3B) — see **"Entity Resolution — Implemented"** below for what was really built and *why* it diverged. Read that section for current behavior; read this one for the original reasoning.
 
 **Problem:** the LLM extractor generates entity ids/names independently per chunk (see `prompt_builder.py` — ids are only "unique within this response"). The same real-world entity mentioned across chunks can come out as different id/name strings (e.g. `sam_altman` vs `samuel_altman` vs `altman`), which `Neo4jGraphStore._merge_entities`'s exact-id `MERGE` won't catch — fragmenting the graph into duplicate nodes.
 
@@ -125,8 +133,32 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 8. **Where resolution lives:** planned as a new `EntityResolver` component sitting between extraction and the graph store (`IngestionPipeline` calls it instead of `graph_store.add(knowledge)` directly) — keeps `Neo4jGraphStore` "dumb" (storage primitives only: search/fetch/write), resolver is the "brain" (decides merge vs new, builds id map, remaps relationships). Not built yet.
 9. Resolution should run **per chunk, writing as it goes** (not batched at end of document) so later chunks in the same document can match against entities resolved from earlier chunks in that same run.
 
+### Entity Resolution — Implemented (`app/resolution/`, 2026-07-03)
+
+Phase 2 built and validated end-to-end across two documents. **The implementation diverged significantly from the original three-band design above** — the divergences were driven by testing, and are the important part to read:
+
+- **`EntityResolver(graph_store, embedder, matcher, low_threshold, k=5)`** — the "brain" between extraction and the graph store. `IngestionPipeline` now holds a resolver (not a graph store directly) and calls `resolver.resolve_knowledge(knowledge)` per chunk.
+- **`resolve_knowledge(knowledge)`** — resolves every entity to a canonical id (building a `{local_id: canonical_id}` map), then rewrites each relationship's `source`/`target` through that map before writing (design point #6 — the trickiest part; skip it and Neo4j silently drops edges). Also renders each entity's chunk relationships as text to feed the matcher.
+- **`resolve(entity, entity_relationships, source_text)`** — the flow that replaced the three-band logic:
+  1. Embed `name + description`, `find_similar_entities(k=5)`.
+  2. Filter to **plausible** candidates (`score >= low_threshold`). None → new node (no LLM call).
+  3. Otherwise hand ALL plausible candidates to the matcher, which returns the matching candidate's id or `None` → merge or create.
+- **`_merge`** — appends alias (dedup), concatenates descriptions, unions `source_chunk_ids`, re-embeds on the merged form, upserts.
+
+**Key divergences from the locked-in design, and why (all test-driven):**
+1. **No HIGH auto-merge band.** Observed similarity scores for *true* vs *false* merges overlap (a wrong `Toronto→Austin` merge scored 0.907, higher than some correct `Northwind` merges at ~0.85) — so **no threshold can safely auto-merge**. `low_threshold` only filters out implausible candidates; the LLM is the sole arbiter for anything plausible. Effectively a two-tier (filter → LLM) design, not three-band.
+2. **Multi-candidate, not single-candidate.** `k=1` failed because when descriptions diverge across chunks, the true match often isn't rank-1 (e.g. a 2nd "Renata Osei" mention's nearest neighbor was "Sam Whitfield"). So the matcher sees the **top-k** and picks among them.
+3. **Matcher returns a candidate id (enum-constrained), not a yes/no.** See matchers below.
+4. **Structural context matters most.** The matcher is fed the new entity's chunk relationships + source text AND each candidate's graph relationships (`get_relationships`). Relationships — not description — are what disambiguate same-name entities (two "Sarah Kim" PMs at different employers). The single biggest quality lever was **richer relationships** (the extractor fix tripled relationship density, which fixed the last marginal merge errors).
+5. **Model capability is the ceiling, not prompts.** `qwen2.5:3b` could not do the matching judgment at all (said "not same" to everything, fragmenting the graph) — no prompt wording fixed it. Switching the matcher to OpenAI `gpt-4o-mini` fixed it immediately; `gpt-4o` additionally resolves hard org-abbreviation cases (`Solvane` = `Solvane Energy`).
+
+**Matcher (`EntityMatcher` ABC + `match_entity(entity, entity_relationships, source_text, candidates, candidate_relationships) -> str | None`):**
+- **`OpenAIEntityMatcher(model="gpt-4o-mini")`** (production) and **`OllamaEntityMatcher(config)`** (local fallback).
+- **`match_response.py`** — `build_match_response(candidate_ids)` returns a Pydantic model whose `match` field is `Literal[tuple(candidate_ids + ["none"])]`. Constrained decoding makes it **structurally impossible** for the LLM to return an id that isn't a real candidate — no uuid-transcription errors. Returns `"none"` → no match.
+- **`match_prompt.py`** — shared `build_match_prompt`; lays out the new entity (name/type/description/relationships/source passage) against the numbered candidates, and frames the call as "these are already similar, so likely the same unless a genuine conflict."
+
 ### Entry Point
-- **`main.py`** — Still a disconnected dev harness: instantiates `DoclingParser`, `DoclingChunker`, `OllamaEmbedder`, loads the graph schema and prints it. Does not yet construct/call `IngestionPipeline`. Next cleanup: wire it to actually run the pipeline against a real path.
+- **`main.py`** — **now the real composition root** (no longer a disconnected harness). Usage: `python main.py [path/to/doc.pdf] [--clear]` (loads `.env`, `--clear` wipes the Neo4j graph first). Wires `DoclingParser`/`DoclingChunker`/`OllamaEmbedder`/`OpenAIExtractor(gpt-4o)`/`QdrantVectorStore`/`Neo4jGraphStore` (computes `embedding_dimensions` from a real probe embedding) + `OpenAIEntityMatcher(gpt-4o)` + `EntityResolver` + `IngestionPipeline`, ingests, prints an `IngestionResult` receipt and per-entity resolution decisions.
 
 ---
 
@@ -134,11 +166,11 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 
 Placeholder directories exist for all of these (empty, no code yet):
 
-- **`app/retrieval/`** — hybrid retrieval (vector + graph)
+- **`app/retrieval/`** — hybrid retrieval (vector + graph) ← **next roadmap item**
 - **`app/reranking/`** — cross-encoder or LLM-based reranker
-- **`app/generation/`** — answer generation via Ollama LLM
+- **`app/generation/`** — answer generation via LLM
 - **`app/utils/`** — shared utilities
-- **`app/database/`** — unclear purpose yet; empty, not referenced anywhere else in the codebase
+- **`app/database/`** — unclear purpose yet; empty
 
 ---
 
@@ -150,15 +182,12 @@ Placeholder directories exist for all of these (empty, no code yet):
 4. `StructuredDoclingDocument(Document)` uses inheritance, but violates LSP in practice: `DoclingChunker.chunk()` requires `docling_doc` to be non-null, so a plain `Document` (e.g. from `PDFParser`) can't safely be passed through the `Chunker` interface polymorphically — it'll raise `ValueError`. Not a bug today since `DoclingParser` output is always paired with `DoclingChunker`, but revisit (e.g. composition instead of inheritance, or a narrower interface) if the pipeline ever needs to pick a chunker generically at runtime rather than by construction.
 5. `test_ollama_extractor.py` is flaky against small models: on a 2026-07-03 run, `qwen2.5:3b` failed to extract a `Microsoft` entity from a chunk describing "Microsoft invested billions of dollars into OpenAI" — plausibly because "invested" doesn't map cleanly onto any of the schema's allowed relationship types (`WORKS_AT`/`LOCATED_IN`/`CREATED`/`OWNS`), so the model may drop the entity rather than force an ill-fitting relationship. Not addressed yet (candidates: add an `INVESTED_IN` relationship type, or accept some entity-recall variance from a 3B model).
 6. `Neo4jGraphStore.add()` isn't transactional per chunk — see note under Knowledge Graph above. If a relationship partway through a chunk's list fails validation, earlier entities/relationships for that chunk are already committed even though `IngestionPipeline` records the whole chunk as failed in `IngestionResult.failures`.
-7. **Entity resolution — Phase 1 done, Phase 2 (the `EntityResolver` itself) is the next work.** See the full design writeup above under "Entity Resolution — Design." Concretely, next steps in order:
-   - Scaffold `EntityResolver` (deps: `GraphStore`, `Embedder`, an LLM client for adjudication) + config for `HIGH`/`LOW` thresholds and `k`.
-   - Band decision method: embed entity → `graph_store.find_similar_entities(...)` → look at top candidate's score → return `MERGE(id)` / `NEW` / `AMBIGUOUS(candidate)`.
-   - LLM adjudicator for the `AMBIGUOUS` case only (small yes/no prompt).
-   - Merge logic: append alias (dedup), concatenate descriptions, re-embed, update node.
-   - **Id map + relationship remapping** — this is the part to be most careful implementing correctly; see design point #6 above for why it's easy to silently drop edges if skipped.
-   - Wire into `IngestionPipeline`: replace direct `graph_store.add(knowledge)` with resolve-then-write, per chunk.
-   - Composition root still needs updating too: `Neo4jGraphStore` now requires `embedding_dimensions` at construction — nothing currently computes and passes this in `main.py` or wherever the pipeline gets wired up. Compute once via `len(embedder.embed_text(["probe"])[0])`.
-   - Manual end-to-end sanity run once wired (ingest a doc with a repeated/aliased entity, confirm one node not two, confirm relationships survive).
+7. ~~**Entity resolution — Phase 2**~~ — **done 2026-07-03**, see "Entity Resolution — Implemented" above. Validated end-to-end across two docs (sample_graphrag_document.pdf and sample_graphrag_document_2.pdf) — clean deduplication, no false merges, type-valid relationships.
+8. **Remaining resolution limitations (not bugs, inherent):**
+   - **Recall wobble** — extraction is run-to-run non-deterministic at the margins; a true edge or entity can be missed on a given pass (e.g. an orphan node, or a `WORKS_AT` not emitted). Precision is solid; recall varies.
+   - **Extraction-reasoning limits** — occasional subject misrouting the endpoint validator can't catch (right entities, wrong wiring); unnamed entities ("a startup in Austin") can't be nodes so their facts drop.
+   - **No offline dedup** — resolution is online (resolve-on-ingest); it never compares two *existing* graph nodes to each other, so a duplicate that slips through once persists. A future "collective ER" pass could catch these.
+9. **`main.py` runs on `gpt-4o` for both extractor and matcher.** For cheaper runs, switch both `model=` strings to `gpt-4o-mini` (very good; the one thing it misses is hard org-abbreviation merges). Cost is trivial either way (~$0.01/run mini, ~$0.12/run 4o). A good hybrid is mini-extractor + 4o-matcher.
 
 ---
 
@@ -172,8 +201,10 @@ Placeholder directories exist for all of these (empty, no code yet):
 | `ollama` | Embedding + extraction (structured JSON) + (future) answer generation |
 | `qdrant-client` | Vector store |
 | `neo4j` | Graph store driver |
-| `pydantic` | Structured-output validation for Ollama extraction responses |
+| `pydantic` | Structured-output validation (Ollama + OpenAI extraction/matching) |
 | `pyyaml` | Config + schema loading |
+| `openai` | Production extractor + entity matcher (`gpt-4o` / `gpt-4o-mini`) |
+| `python-dotenv` | Loads `OPENAI_API_KEY` from `.env` |
 
 ---
 
@@ -198,8 +229,9 @@ Placeholder directories exist for all of these (empty, no code yet):
 - `DoclingParser` and `DoclingChunker` are paired — the structured Docling object flows between them via `StructuredDoclingDocument`. `IngestionPipeline` doesn't enforce this pairing itself (any `Parser`/`Chunker` combo type-checks); pick compatible ones at construction time.
 - Extraction domain objects (`app/graph/entity.py`, `relationship.py`) are intentionally separate from the Pydantic response schemas (`app/extraction/schemas/`) — the latter exist only to constrain/validate Ollama's structured JSON output, then get converted into the former. As of 2026-07-03 the schemas are built dynamically per `GraphSchema` (enum-constrained), not static classes.
 - `Neo4jGraphStore` takes `Neo4jConfig` + `GraphSchema` + (as of 2026-07-03) `embedding_dimensions: int` — the last one is a plain value, not a config object, deliberately computed once at the composition root rather than hardcoded (see Entity Resolution section). Still consistent in spirit with `OllamaExtractor`/`QdrantVectorStore` taking just their own config.
-- `main.py` is a dev harness, not a CLI or API entry point; still not wired to `IngestionPipeline`.
-- `feature/entity-extraction` and `feature/graph-store` branches are both merged into `main` as of this update (PRs #8 and #9). Current branch is `feature/ingestion-pipeline`.
+- `main.py` is now the wired composition root (`python main.py [doc.pdf] [--clear]`), not just a harness.
+- Extraction/matching moved from the local 3B (`qwen2.5:3b`) to OpenAI `gpt-4o`; the Ollama implementations remain as swappable fallbacks behind the same ABCs.
+- Entity resolution + relationship-quality work is merged to `main`. An exploratory **schema-induction** feature (k-means-from-scratch diversity sampling to auto-induce the schema) lives on the `feature/schema-induction` branch, unwired — deferred to a future version; `graph.yaml` remains the hand-curated source of truth.
 
 ---
 
@@ -207,8 +239,8 @@ Placeholder directories exist for all of these (empty, no code yet):
 
 1. ~~**IngestionPipeline**~~ — **done 2026-07-03**
 2. ~~Integration tests~~ — deferred; building end-to-end first (see Testing note above)
-3. **Entity resolution** ← in progress (Phase 1 done: data model, storage, similarity search. Phase 2 next: build `EntityResolver` — see Known Issues #7 and the design writeup above)
-4. Graph retriever
+3. ~~**Entity resolution**~~ — **done 2026-07-03** (Phase 1 + Phase 2 + relationship-quality: enriched schema, endpoint validation, OpenAI extraction/matching)
+4. **Graph retriever** ← next
 5. Vector retriever
 6. Hybrid retrieval
 7. RRF
