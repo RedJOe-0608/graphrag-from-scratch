@@ -13,6 +13,8 @@ from app.resolution.entity_resolver import EntityResolver
 from app.resolution.ollama_entity_matcher import OllamaEntityMatcher
 from app.resolution.openai_entity_matcher import OpenAIEntityMatcher
 from app.retrieval.graph_retriever import GraphRetriever
+from app.retrieval.hybrid_retriever import HybridRetriever
+from app.retrieval.vector_retriever import VectorRetriever
 from app.vector_store.qdrant_vector_store import QdrantVectorStore
 
 from dotenv import load_dotenv
@@ -70,12 +72,19 @@ def main():
 
     if query:
         query_extractor = QueryEntityExtractor(schema=schema, model="gpt-4o-mini")
-        retriever = GraphRetriever(
+        vector_retriever = VectorRetriever(
+            vector_store=vector_store,
+            embedder=embedder,
+        )
+        graph_retriever = GraphRetriever(
             graph_store=graph_store,
             vector_store=vector_store,
             embedder=embedder,
             query_extractor=query_extractor,
             k=CANDIDATE_K,
+        )
+        retriever = HybridRetriever(
+            retrievers=[vector_retriever, graph_retriever],
         )
 
         chunks = retriever.retrieve(query)

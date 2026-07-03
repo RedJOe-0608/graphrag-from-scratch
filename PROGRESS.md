@@ -33,8 +33,8 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 | **Relationship quality** — enriched schema (endpoints) + endpoint-type validation | **Done** |
 | **OpenAI extraction + matching** (`gpt-4o` / `gpt-4o-mini`) | **Done** |
 | **Vector retriever** (`Retriever` ABC + `VectorRetriever`) | **Done** |
-| Graph retriever | Not started |
-| Hybrid Retrieval + RRF | Not started |
+| **Graph retriever** (`GraphRetriever`, `QueryEntityExtractor`) | **Done** |
+| **Hybrid Retrieval + RRF** (`HybridRetriever`) | **Done** |
 | Reranking | Not started |
 | Answer Generation | Not started |
 
@@ -73,7 +73,7 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 
 ### Vector Store (`app/vector_store/`)
 - **`vector_store.py`** — `VectorStore` ABC with `add(chunks)` and `search(query_embedding, limit) -> list[EmbeddedChunk]`
-- **`qdrant_vector_store.py`** — `QdrantVectorStore` fully connects to Qdrant at `localhost:6333`. `add()`: lazy collection creation (cosine distance, vector size inferred from first chunk) + bulk upsert via `PointStruct`. `search()`: queries Qdrant via `query_points`, reconstructs `EmbeddedChunk` objects from payload. Both methods complete and passing tests.
+- **`qdrant_vector_store.py`** — `QdrantVectorStore` fully connects to Qdrant at `localhost:6333`. `add()`: lazy collection creation (cosine distance, vector size inferred from first chunk) + bulk upsert via `PointStruct`. `search()`: queries Qdrant via `query_points`, reconstructs `EmbeddedChunk` objects from payload. Both methods complete and passing tests. **`get_by_ids(chunk_ids) -> list[Chunk]`** (added 2026-07-04, for the graph retriever) — fetch-by-id via Qdrant's `retrieve()` (not similarity search), returns plain `Chunk`s (no embedding needed by callers). New abstract method on `VectorStore` too.
 
 ### Configuration (`app/config/`, `config/`)
 - **`app_config.py`** — dataclasses: `Neo4jConfig` (uri, username, password), `OllamaConfig` (model, host), `QdrantConfig` (host, port, collection), and top-level `AppConfig` bundling all three.
@@ -159,8 +159,31 @@ Phase 2 built and validated end-to-end across two documents. **The implementatio
 - **`match_response.py`** — `build_match_response(candidate_ids)` returns a Pydantic model whose `match` field is `Literal[tuple(candidate_ids + ["none"])]`. Constrained decoding makes it **structurally impossible** for the LLM to return an id that isn't a real candidate — no uuid-transcription errors. Returns `"none"` → no match.
 - **`match_prompt.py`** — shared `build_match_prompt`; lays out the new entity (name/type/description/relationships/source passage) against the numbered candidates, and frames the call as "these are already similar, so likely the same unless a genuine conflict."
 
+### Retrieval (`app/retrieval/`, 2026-07-04)
+- **`retriever.py`** — `Retriever` ABC: `retrieve(query, limit=5) -> list[Chunk]`, most relevant first. Both retrievers below implement this same contract so they're interchangeable — deliberate, since hybrid retrieval (next roadmap item) will hold a `list[Retriever]` and fuse their outputs with RRF, which requires both sides to return the same item type (chunks, not entities or subgraphs).
+- **`vector_retriever.py`** — `VectorRetriever(vector_store, embedder)`. `retrieve()`: embeds the query, `vector_store.search()`, strips `EmbeddedChunk` down to `Chunk`. Verified end-to-end against Qdrant.
+- **`graph_retriever.py`** — `GraphRetriever(graph_store, vector_store, embedder, query_extractor, k=5)`. This is the "entity-anchored traversal" pattern (the classic GraphRAG local-search shape), reusing storage primitives already built for entity resolution rather than introducing new ones. `retrieve(query, limit)`:
+  1. `query_extractor.extract(query)` → query entities (name + type only, see `QueryEntityExtractor` below).
+  2. For each query entity: embed `name + description`, `graph_store.find_similar_entities(entity_type, embedding, k)` → up to `k` **anchor** nodes (type-filtered, no threshold — unlike `EntityResolver`, there's no LLM adjudication step here; a wrong anchor just adds ranking noise, not graph corruption).
+  3. For each anchor: `graph_store.get_relationships(anchor_id)` → **1-hop neighbors** (deliberately not 2+ hops — each additional hop re-runs the full fan-out query on every node touched by the last round, and Microsoft GraphRAG's local search also defaults to 1 hop; revisit only if 1-hop context proves too shallow in practice).
+  4. Tallies every `source_chunk_ids`/`other_source_chunk_ids` seen across anchors + neighbors in a `Counter` — frequency is the ranking signal (a chunk referenced by more anchors/neighbors ranks higher). `k` (anchor fan-out width) and `limit` (final chunk count returned) are different knobs operating at different stages — `k` shapes what goes into the tally, `limit` shapes what comes out.
+  5. `vector_store.get_by_ids(top_chunk_ids)` → real `Chunk` text.
+  - **Known ranking nuance (not yet fixed, no confirmed bug):** every anchor's votes count equally regardless of its similarity score, so a chunk connected to several low-confidence anchors could in principle outrank a chunk connected to one high-confidence anchor. Considered fix: weight each vote by `anchor["score"]` instead of a flat `+1`. Deferred — traced through a real example (`"Who attends the Cascade Portfolio Summit?"`) expecting this to be the cause of a bad ranking and found the top result was in fact correct (a summary chunk that happened to answer the question); no real failure observed yet, so not implemented speculatively.
+- **`query_entity_extractor.py`** (`QueryEntityExtractor`, in `app/extraction/`, not `app/retrieval/`) — **not** an `Extractor` subclass; a separate, narrower interface (`extract(query: str) -> list[Entity]`) built specifically for query-time entity linking. **Why a separate class, not the reused document `Extractor`:** the document extractor's prompt requires every entity to have a description grounded only in the source text (a deliberate, hard-won rule for extraction quality — see Entity Resolution notes above). A bare question like *"Where does Maria Ellison work?"* states no facts about Maria Ellison to ground a description in, so the LLM — correctly following that rule — dropped the entity entirely, and `GraphRetriever` got zero anchors. Confirmed via testing: 2 of 3 test queries returned 0 chunks before this fix. The general lesson (entity linking and relation extraction are normally separate tools in KG-QA systems, not one reused) matches the standard field pattern, not just a local workaround.
+  - **`query_entities_response.py`** (`app/extraction/schemas/`) — Pydantic schema with only `name` + `entity_type` (both required; `entity_type` is `Literal[tuple(entity_types)]`, same enum-constraint mechanism as document extraction). No `id`, no `description`, no relationships.
+  - **`query_prompt_builder.py`** (`app/extraction/`, sibling to `prompt_builder.py` — not in `schemas/`, which is reserved for Pydantic response models) — lighter prompt, explicitly instructs the model that a bare mention with no stated facts is still a valid entity to extract.
+  - `QueryEntityExtractor.extract()` generates a throwaway `uuid4()` for each `Entity.id` (never written to the graph — only exists because the `Entity` dataclass requires an id) and leaves `description=None` (handled gracefully by `build_entity_embedding_text`'s `description or ""`).
+- **`hybrid_retriever.py`** (`HybridRetriever`, 2026-07-04) — `HybridRetriever(retrievers: list[Retriever], rrf_k=60, fetch_multiplier=4)`. Fuses any number of `Retriever`s (currently `VectorRetriever` + `GraphRetriever`) via Reciprocal Rank Fusion, not raw score blending — vector cosine-similarity and graph mention-counts aren't on comparable scales, so fusing by rank position sidesteps calibration entirely. `retrieve(query, limit)`:
+  1. Over-fetches `limit * fetch_multiplier` from each sub-retriever (rank-position fusion needs a real candidate pool — asking each retriever for exactly `limit` results means most chunks common to both barely overlap, so RRF has nothing to fuse).
+  2. For each retriever's ranked list, accumulates `1 / (rrf_k + rank)` per chunk id into a running score, keyed by `chunk.id` (a side dict maps id → `Chunk` since scores are tracked by id, not by object).
+  3. Sorts ids by total score descending, takes the top `limit`, returns the corresponding `Chunk`s.
+  - Verified end-to-end via `main.py --query` against the real Neo4j + Qdrant graph (Northwind Robotics sample data) — top result matched the query correctly, no errors.
+
 ### Entry Point
-- **`main.py`** — **now the real composition root** (no longer a disconnected harness). Usage: `python main.py [path/to/doc.pdf] [--clear]` (loads `.env`, `--clear` wipes the Neo4j graph first). Wires `DoclingParser`/`DoclingChunker`/`OllamaEmbedder`/`OpenAIExtractor(gpt-4o)`/`QdrantVectorStore`/`Neo4jGraphStore` (computes `embedding_dimensions` from a real probe embedding) + `OpenAIEntityMatcher(gpt-4o)` + `EntityResolver` + `IngestionPipeline`, ingests, prints an `IngestionResult` receipt and per-entity resolution decisions.
+- **`main.py`** — **now the real composition root** (no longer a disconnected harness). Usage:
+  - `python main.py [path/to/doc.pdf] [--clear]` — ingest a document (`--clear` wipes the Neo4j graph first). Wires `DoclingParser`/`DoclingChunker`/`OllamaEmbedder`/`OpenAIExtractor(gpt-4o)`/`QdrantVectorStore`/`Neo4jGraphStore` (computes `embedding_dimensions` from a real probe embedding) + `OpenAIEntityMatcher(gpt-4o)` + `EntityResolver` + `IngestionPipeline`, ingests, prints an `IngestionResult` receipt and per-entity resolution decisions.
+  - `python main.py --query "question" [--clear]` — query the graph instead of ingesting. Skips parser/chunker/extractor/resolver (not needed for querying) — wires `QueryEntityExtractor(gpt-4o-mini)` + `VectorRetriever` + `GraphRetriever` (reusing the same `CANDIDATE_K` constant as `EntityResolver`), then wraps both in a `HybridRetriever` (**updated 2026-07-04**, was `GraphRetriever` alone) and prints the fused, retrieved chunks. Verified end-to-end against the real graph.
+  - Both modes load `.env` and share the same `embedder`/`vector_store`/`graph_store` construction.
 
 ---
 
@@ -168,7 +191,7 @@ Phase 2 built and validated end-to-end across two documents. **The implementatio
 
 Placeholder directories exist for all of these (empty, no code yet):
 
-- **`app/retrieval/`** — `Retriever` ABC + `VectorRetriever` **done**; graph retriever + hybrid/RRF ← **next roadmap item**
+- **`app/retrieval/`** — `Retriever` ABC + `VectorRetriever` + `GraphRetriever` + `HybridRetriever` (RRF) **done**
 - **`app/reranking/`** — cross-encoder or LLM-based reranker
 - **`app/generation/`** — answer generation via LLM
 - **`app/utils/`** — shared utilities
@@ -243,10 +266,10 @@ Placeholder directories exist for all of these (empty, no code yet):
 2. ~~Integration tests~~ — deferred; building end-to-end first (see Testing note above)
 3. ~~**Entity resolution**~~ — **done 2026-07-03** (Phase 1 + Phase 2 + relationship-quality: enriched schema, endpoint validation, OpenAI extraction/matching)
 4. ~~Vector retriever~~ — **done** (`app/retrieval/`: `Retriever` ABC + `VectorRetriever`; verified end-to-end against Qdrant)
-5. **Graph retriever** ← next
-6. Hybrid retrieval
-7. RRF
-8. Reranker
+5. ~~Graph retriever~~ — **done 2026-07-04** (`GraphRetriever` + `QueryEntityExtractor`; entity-anchored 1-hop traversal; verified end-to-end against Neo4j via `main.py --query`)
+6. ~~Hybrid retrieval~~ — **done 2026-07-04** (`HybridRetriever`, fuses `VectorRetriever` + `GraphRetriever`)
+7. ~~RRF~~ — **done 2026-07-04** (reciprocal rank fusion, `rrf_k=60`, `fetch_multiplier=4`; see `HybridRetriever` above)
+8. Reranker ← next
 9. Context builder
 10. Answer generation
 11. GraphRAGEngine
