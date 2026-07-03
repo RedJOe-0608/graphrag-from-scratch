@@ -291,3 +291,21 @@ Placeholder directories exist for all of these (empty, no code yet):
 9. ~~Context builder~~ — **done 2026-07-04** (`build_context`)
 10. ~~Answer generation~~ — **done 2026-07-04** (`AnswerGenerator` ABC + `OpenAIAnswerGenerator`; full query→answer loop verified end-to-end via `main.py --query`, including correct refusal on out-of-context questions)
 11. ~~GraphRAGEngine~~ — **done 2026-07-04** (`GraphRAGEngine` facade; `main.py` refactored into a thin CLI over it — see `app/engine/` above)
+
+---
+
+## Next Steps (planned order, 2026-07-04)
+
+The full end-to-end loop works; the next phase focuses on **measurement, retrieval quality, robustness, and new capabilities**. Chosen order and rationale:
+
+1. **RAG evaluation metrics** — *built first, deliberately*, so every later change gets a number attached instead of being judged by feel. A quantitative measuring stick for answer/retrieval quality. RAGAS-style metrics: faithfulness (answer supported by retrieved chunks, no hallucination), answer relevance, context precision/recall (did retrieval fetch the right chunks, miss any). Requires a small labeled eval set (~20–50 questions over the sample docs with known-good answers / expected chunks). This is the baseline against which #2 (sparse) and #3 (reranking) prove their lift.
+
+2. **Sparse / keyword retrieval** — add a BM25/sparse-vector retriever alongside the existing dense `VectorRetriever`. This is "hybrid" in the *IR* sense (dense + sparse), distinct from this project's current dense-vector + graph "hybrid." Dense embeddings are weak at exact-token matching (rare names, product codes, acronyms, exact phrases); sparse fixes that. Slots in behind the existing `Retriever` ABC and is fused by RRF for free. (Note: named-entity exact matches are already partly handled by `GraphRetriever`'s entity linking; sparse mainly helps non-entity keyword hits in chunk text.) Qdrant supports sparse vectors natively.
+
+3. **Reranking** — add a cross-encoder reranker as a precision funnel after retrieval. Current retrievers are bi-encoders (query and chunk embedded separately, fast but miss fine-grained relevance). A cross-encoder reads `[query + chunk]` together and scores relevance far more accurately, but is slow — so retrieval over-fetches a candidate pool (~20–50) and the reranker reorders it down to the top ~5 that reach the LLM. Fills the placeholder `app/reranking/` directory. Insurance that the best chunk actually reaches the generator instead of being ranked just outside `limit`.
+
+4. **Integration tests** — a dedicated testing pass now that the app works end-to-end (the deferral condition in the Testing note is met). Tests at various pipeline stages assert *mechanical* correctness (runs without crashing, contracts honored, ingestion yields >0 entities/relationships, retrieval returns chunks). Distinct from eval (#1): tests catch the pipeline *breaking*, eval catches it getting *worse* without breaking.
+
+5. **Leiden / community detection (global search)** — the biggest new capability. Microsoft GraphRAG has two query modes: *local search* (entity-anchored 1-hop traversal — already built as `GraphRetriever`) and *global search*, for broad "summarize the whole corpus / what are the main themes" questions the current system can't answer. Leiden is a community-detection algorithm that clusters the graph into densely-connected communities; an LLM summarizes each community, and broad questions map-reduce over those community summaries instead of raw chunks. High value (fills a real capability gap), higher effort.
+
+6. **Corrective / Self / Agentic RAG** — advanced control-flow patterns layered on top of RAG, done last (justified by the eval harness from #1). Corrective RAG (CRAG): grade retrieved chunks, take corrective action if poor. Self-RAG: model decides when to retrieve and critiques its own answer against sources. Agentic RAG: LLM plans multi-step retrieval — the most relevant here, since it would enable **multi-hop** questions the current 1-hop `GraphRetriever` can't answer.
