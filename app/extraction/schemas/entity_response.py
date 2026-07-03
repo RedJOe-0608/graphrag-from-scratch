@@ -9,5 +9,5 @@ def build_entity_response(entity_types: list[str]) -> type[BaseModel]:
         id=(str, ...),
         name=(str, ...),
         entity_type=(Literal[tuple(entity_types)], ...),
-        description=(str | None, None),
+        description=(str, ...),
     )

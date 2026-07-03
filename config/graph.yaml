@@ -5,8 +5,43 @@ entity_types:
   - Product
   - Event
 
+# Each relationship declares its legal endpoint types. Extraction drops any
+# edge whose source/target entity types violate these (e.g. WORKS_AT can't
+# terminate on a Location). Enriched from the two sample documents.
 relationship_types:
-  - WORKS_AT
-  - LOCATED_IN
-  - CREATED
-  - OWNS
+  WORKS_AT:
+    source: [Person]
+    target: [Organization]
+  LOCATED_IN:
+    source: [Person, Organization, Event]
+    target: [Location]
+  CREATED:
+    source: [Person, Organization]
+    target: [Product, Event]
+  OWNS:
+    source: [Organization]
+    target: [Product, Organization]
+  INVESTED_IN:
+    source: [Organization, Person]
+    target: [Organization]
+  PARTNERED_WITH:
+    source: [Organization]
+    target: [Organization]
+  BOARD_MEMBER_OF:
+    source: [Person]
+    target: [Organization]
+  ACQUIRED:
+    source: [Organization]
+    target: [Organization]
+  DISTRIBUTES:
+    source: [Organization]
+    target: [Product]
+  SUPPLIES:
+    source: [Organization]
+    target: [Organization, Product]
+  SPOKE_AT:
+    source: [Person]
+    target: [Event]
+  ATTENDED:
+    source: [Person]
+    target: [Event]

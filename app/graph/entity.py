@@ -8,6 +8,8 @@ class Entity:
     description: str | None = None
     aliases: list[str] = field(default_factory=list)
     embedding: list[float] | None = None
+    source_chunk_ids: list[str] = field(default_factory=list)
+
 
 
 def build_entity_embedding_text(entity: Entity) -> str:

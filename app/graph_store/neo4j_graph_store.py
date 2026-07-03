@@ -90,7 +90,8 @@ class Neo4jGraphStore(GraphStore):
                 e.type = entity.type,
                 e.description = entity.description,
                 e.aliases = entity.aliases,
-                e.embedding = entity.embedding
+                e.embedding = entity.embedding,
+                e.source_chunk_ids = entity.source_chunk_ids
             """,
             entities=[
                 {
@@ -100,6 +101,7 @@ class Neo4jGraphStore(GraphStore):
                     "description": entity.description,
                     "aliases": entity.aliases,
                     "embedding": entity.embedding,
+                    "source_chunk_ids": entity.source_chunk_ids,
                 }
                 for entity in entities
             ],
@@ -132,3 +134,56 @@ class Neo4jGraphStore(GraphStore):
             target=relationship.target,
             description=relationship.description,
         )
+
+    def find_similar_entities(
+    self,
+    entity_type: str,
+    embedding: list[float],
+    k: int = 5,
+    ) -> list[dict]:
+        # O(n) over all entities of this type — exact cosine similarity,
+        # no ANN index used. Fine at current scale; revisit if entity
+        # counts per type grow large enough that this becomes slow.
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (e:Entity {type: $entity_type})
+                RETURN
+                    e.id AS id,
+                    e.name AS name,
+                    e.description AS description,
+                    e.aliases AS aliases,
+                    e.source_chunk_ids AS source_chunk_ids,
+                    vector.similarity.cosine(e.embedding, $embedding) AS score
+                ORDER BY score DESC
+                LIMIT $k
+                """,
+                entity_type=entity_type,
+                embedding=embedding,
+                k=k,
+            )
+            return [dict(record) for record in result]
+
+    def upsert_entity(self, entity: Entity) -> None:
+        with self.driver.session() as session:
+            session.execute_write(self._merge_entities, [entity])
+
+    def get_relationships(self, entity_id: str) -> list[dict]:
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (e:Entity {id: $entity_id})-[r]-(other:Entity)
+                RETURN
+                    type(r) AS type,
+                    CASE WHEN startNode(r) = e THEN 'out' ELSE 'in' END AS direction,
+                    other.name AS other_name
+                """,
+                entity_id=entity_id,
+            )
+            return [dict(record) for record in result]
+
+
+    def add_relationship(self, relationship: Relationship) -> None:
+        with self.driver.session() as session:
+            session.execute_write(self._merge_relationship, relationship)
+
