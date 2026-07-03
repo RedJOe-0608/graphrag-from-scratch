@@ -32,6 +32,8 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 | **Entity Resolution** — `EntityResolver`, multi-candidate LLM matching, provenance | **Done (Phase 1 + Phase 2)** |
 | **Relationship quality** — enriched schema (endpoints) + endpoint-type validation | **Done** |
 | **OpenAI extraction + matching** (`gpt-4o` / `gpt-4o-mini`) | **Done** |
+| **Vector retriever** (`Retriever` ABC + `VectorRetriever`) | **Done** |
+| Graph retriever | Not started |
 | Hybrid Retrieval + RRF | Not started |
 | Reranking | Not started |
 | Answer Generation | Not started |
@@ -166,7 +168,7 @@ Phase 2 built and validated end-to-end across two documents. **The implementatio
 
 Placeholder directories exist for all of these (empty, no code yet):
 
-- **`app/retrieval/`** — hybrid retrieval (vector + graph) ← **next roadmap item**
+- **`app/retrieval/`** — `Retriever` ABC + `VectorRetriever` **done**; graph retriever + hybrid/RRF ← **next roadmap item**
 - **`app/reranking/`** — cross-encoder or LLM-based reranker
 - **`app/generation/`** — answer generation via LLM
 - **`app/utils/`** — shared utilities
@@ -240,8 +242,8 @@ Placeholder directories exist for all of these (empty, no code yet):
 1. ~~**IngestionPipeline**~~ — **done 2026-07-03**
 2. ~~Integration tests~~ — deferred; building end-to-end first (see Testing note above)
 3. ~~**Entity resolution**~~ — **done 2026-07-03** (Phase 1 + Phase 2 + relationship-quality: enriched schema, endpoint validation, OpenAI extraction/matching)
-4. **Graph retriever** ← next
-5. Vector retriever
+4. ~~Vector retriever~~ — **done** (`app/retrieval/`: `Retriever` ABC + `VectorRetriever`; verified end-to-end against Qdrant)
+5. **Graph retriever** ← next
 6. Hybrid retrieval
 7. RRF
 8. Reranker
