@@ -86,3 +86,19 @@ class QdrantVectorStore(VectorStore):
             )
             for point in response.points
         ]
+
+    def get_by_ids(self, chunk_ids: list[str]) -> list[Chunk]:
+        points = self.client.retrieve(
+            collection_name=self.collection_name,
+            ids=chunk_ids,
+            with_payload=True,
+        )
+
+        return [
+            Chunk(
+                id=point.payload["chunk_id"],
+                document_id=point.payload["document_id"],
+                text=point.payload["text"],
+            )
+            for point in points
+        ]

@@ -174,9 +174,13 @@ class Neo4jGraphStore(GraphStore):
                 """
                 MATCH (e:Entity {id: $entity_id})-[r]-(other:Entity)
                 RETURN
-                    type(r) AS type,
-                    CASE WHEN startNode(r) = e THEN 'out' ELSE 'in' END AS direction,
-                    other.name AS other_name
+                type(r) AS type,
+                CASE WHEN startNode(r) = e THEN 'out' ELSE 'in' END AS direction,
+                other.id AS other_id,
+                other.name AS other_name,
+                other.type AS other_type,
+                other.source_chunk_ids AS other_source_chunk_ids
+
                 """,
                 entity_id=entity_id,
             )

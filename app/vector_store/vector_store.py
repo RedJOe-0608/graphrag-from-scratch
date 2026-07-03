@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 
+from app.models.chunk import Chunk
 from app.models.embedded_chunk import EmbeddedChunk
 
 
@@ -16,3 +17,13 @@ class VectorStore(ABC):
         """
         return the most similar embedded chunks.
         """
+        pass
+
+    @abstractmethod
+    def get_by_ids(self, chunk_ids: list[str]) -> list[Chunk]:
+        """
+        Return the chunks matching the given ids.
+        """
+        pass
+
+    
