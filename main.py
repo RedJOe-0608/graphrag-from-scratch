@@ -5,12 +5,14 @@ from app.config.app_config_loader import load_app_config
 from app.config.graph_schema_loader import load_graph_schema
 from app.embeddings.ollama_embedder import OllamaEmbedder
 from app.extraction.openai_extractor import OpenAIExtractor
+from app.extraction.query_entity_extractor import QueryEntityExtractor
 from app.graph_store.neo4j_graph_store import Neo4jGraphStore
 from app.ingestion.ingestion_pipeline import IngestionPipeline
 from app.parsing.docling_parser import DoclingParser
 from app.resolution.entity_resolver import EntityResolver
 from app.resolution.ollama_entity_matcher import OllamaEntityMatcher
 from app.resolution.openai_entity_matcher import OpenAIEntityMatcher
+from app.retrieval.graph_retriever import GraphRetriever
 from app.vector_store.qdrant_vector_store import QdrantVectorStore
 
 from dotenv import load_dotenv
@@ -29,20 +31,27 @@ DEFAULT_DOCUMENT = "tests/data/sample_graphrag_document.pdf"
 def main():
 
     load_dotenv()
-    # Usage: python main.py [path/to/doc.pdf] [--clear]
-    #   path defaults to the sample doc; --clear wipes the graph before ingesting.
+    # Usage:
+    #   python main.py [path/to/doc.pdf] [--clear]      ingest a document
+    #   python main.py --query "question" [--clear]     query the graph
+    #   path defaults to the sample doc; --clear wipes the graph first.
     #   Omit --clear to ingest ON TOP of the existing graph (cross-document resolution).
-    args = [a for a in sys.argv[1:] if a != "--clear"]
-    document_path = args[0] if args else DEFAULT_DOCUMENT
-    should_clear = "--clear" in sys.argv
+    raw_args = sys.argv[1:]
+    should_clear = "--clear" in raw_args
+
+    query = None
+    if "--query" in raw_args:
+        query = raw_args[raw_args.index("--query") + 1]
+
+    positional = [
+        a for a in raw_args if a not in ("--clear", "--query", query)
+    ]
+    document_path = positional[0] if positional else DEFAULT_DOCUMENT
 
     config = load_app_config("config/app.yaml")
     schema = load_graph_schema("config/graph.yaml")
 
-    parser = DoclingParser()
-    chunker = DoclingChunker()
     embedder = OllamaEmbedder()
-    extractor = OpenAIExtractor(schema=schema, model="gpt-4o")
     vector_store = QdrantVectorStore(config=config.qdrant)
 
     # Derive the embedding dimensionality from a real embedding call rather than
@@ -58,6 +67,29 @@ def main():
     if should_clear:
         graph_store.clear()
         print("Cleared existing graph.\n")
+
+    if query:
+        query_extractor = QueryEntityExtractor(schema=schema, model="gpt-4o-mini")
+        retriever = GraphRetriever(
+            graph_store=graph_store,
+            vector_store=vector_store,
+            embedder=embedder,
+            query_extractor=query_extractor,
+            k=CANDIDATE_K,
+        )
+
+        chunks = retriever.retrieve(query)
+
+        print(f"\nQuery: {query}")
+        print(f"Retrieved {len(chunks)} chunk(s):\n")
+        for chunk in chunks:
+            print(f"[{chunk.id}]\n{chunk.text}\n")
+
+        return
+
+    parser = DoclingParser()
+    chunker = DoclingChunker()
+    extractor = OpenAIExtractor(schema=schema, model="gpt-4o")
 
     matcher = OpenAIEntityMatcher(model="gpt-4o")
     resolver = EntityResolver(
