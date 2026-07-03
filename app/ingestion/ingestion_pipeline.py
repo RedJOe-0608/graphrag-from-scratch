@@ -27,7 +27,7 @@ class IngestionPipeline:
     def ingest(self, path: str) -> IngestionResult:
         document = self.parser.parse(path)
         chunks = self.chunker.chunk(document)
-        embedded_chunks = self.embedder.embed(chunks)
+        embedded_chunks = self.embedder.embed_chunk(chunks)
         self.vector_store.add(embedded_chunks)
 
         entity_count = 0

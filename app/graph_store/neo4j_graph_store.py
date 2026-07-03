@@ -13,6 +13,7 @@ class Neo4jGraphStore(GraphStore):
         self,
         config: Neo4jConfig,
         schema: GraphSchema,
+        embedding_dimensions: int
     ):
         self.driver = GraphDatabase.driver(
             config.uri,
@@ -25,12 +26,29 @@ class Neo4jGraphStore(GraphStore):
         self.allowed_relationships = set(schema.relationship_types)
 
         self._create_constraints()
+        self._create_vector_index(embedding_dimensions)
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.driver.close()
+    
+    def _create_vector_index(self, dimensions: int):
+        with self.driver.session() as session:
+            session.run(
+                f"""
+                CREATE VECTOR INDEX entity_embedding IF NOT EXISTS
+                FOR (e:Entity) ON (e.embedding)
+                OPTIONS {{
+                    indexConfig: {{
+                        `vector.dimensions`: {dimensions},
+                        `vector.similarity_function`: 'cosine'
+                    }}
+                }}
+                """
+            )
+
 
     def clear(self) -> None:
         with self.driver.session() as session:
@@ -70,7 +88,9 @@ class Neo4jGraphStore(GraphStore):
             SET
                 e.name = entity.name,
                 e.type = entity.type,
-                e.description = entity.description
+                e.description = entity.description,
+                e.aliases = entity.aliases,
+                e.embedding = entity.embedding
             """,
             entities=[
                 {
@@ -78,6 +98,8 @@ class Neo4jGraphStore(GraphStore):
                     "name": entity.name,
                     "type": entity.entity_type,
                     "description": entity.description,
+                    "aliases": entity.aliases,
+                    "embedding": entity.embedding,
                 }
                 for entity in entities
             ],
