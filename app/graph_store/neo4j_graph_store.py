@@ -13,6 +13,7 @@ class Neo4jGraphStore(GraphStore):
         self,
         config: Neo4jConfig,
         schema: GraphSchema,
+        embedding_dimensions: int
     ):
         self.driver = GraphDatabase.driver(
             config.uri,
@@ -25,12 +26,29 @@ class Neo4jGraphStore(GraphStore):
         self.allowed_relationships = set(schema.relationship_types)
 
         self._create_constraints()
+        self._create_vector_index(embedding_dimensions)
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.driver.close()
+    
+    def _create_vector_index(self, dimensions: int):
+        with self.driver.session() as session:
+            session.run(
+                f"""
+                CREATE VECTOR INDEX entity_embedding IF NOT EXISTS
+                FOR (e:Entity) ON (e.embedding)
+                OPTIONS {{
+                    indexConfig: {{
+                        `vector.dimensions`: {dimensions},
+                        `vector.similarity_function`: 'cosine'
+                    }}
+                }}
+                """
+            )
+
 
     def clear(self) -> None:
         with self.driver.session() as session:
@@ -70,7 +88,10 @@ class Neo4jGraphStore(GraphStore):
             SET
                 e.name = entity.name,
                 e.type = entity.type,
-                e.description = entity.description
+                e.description = entity.description,
+                e.aliases = entity.aliases,
+                e.embedding = entity.embedding,
+                e.source_chunk_ids = entity.source_chunk_ids
             """,
             entities=[
                 {
@@ -78,6 +99,9 @@ class Neo4jGraphStore(GraphStore):
                     "name": entity.name,
                     "type": entity.entity_type,
                     "description": entity.description,
+                    "aliases": entity.aliases,
+                    "embedding": entity.embedding,
+                    "source_chunk_ids": entity.source_chunk_ids,
                 }
                 for entity in entities
             ],
@@ -110,3 +134,56 @@ class Neo4jGraphStore(GraphStore):
             target=relationship.target,
             description=relationship.description,
         )
+
+    def find_similar_entities(
+    self,
+    entity_type: str,
+    embedding: list[float],
+    k: int = 5,
+    ) -> list[dict]:
+        # O(n) over all entities of this type — exact cosine similarity,
+        # no ANN index used. Fine at current scale; revisit if entity
+        # counts per type grow large enough that this becomes slow.
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (e:Entity {type: $entity_type})
+                RETURN
+                    e.id AS id,
+                    e.name AS name,
+                    e.description AS description,
+                    e.aliases AS aliases,
+                    e.source_chunk_ids AS source_chunk_ids,
+                    vector.similarity.cosine(e.embedding, $embedding) AS score
+                ORDER BY score DESC
+                LIMIT $k
+                """,
+                entity_type=entity_type,
+                embedding=embedding,
+                k=k,
+            )
+            return [dict(record) for record in result]
+
+    def upsert_entity(self, entity: Entity) -> None:
+        with self.driver.session() as session:
+            session.execute_write(self._merge_entities, [entity])
+
+    def get_relationships(self, entity_id: str) -> list[dict]:
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (e:Entity {id: $entity_id})-[r]-(other:Entity)
+                RETURN
+                    type(r) AS type,
+                    CASE WHEN startNode(r) = e THEN 'out' ELSE 'in' END AS direction,
+                    other.name AS other_name
+                """,
+                entity_id=entity_id,
+            )
+            return [dict(record) for record in result]
+
+
+    def add_relationship(self, relationship: Relationship) -> None:
+        with self.driver.session() as session:
+            session.execute_write(self._merge_relationship, relationship)
+

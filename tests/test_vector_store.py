@@ -13,7 +13,7 @@ def test_qdrant_vector_store_returns_relevant_chunks(vector_store):
 
     document = parser.parse("tests/data/sample_graphrag_document.pdf")
     chunks = chunker.chunk(document)
-    embedded_chunks = embedder.embed(chunks)
+    embedded_chunks = embedder.embed_chunk(chunks)
     vector_store.add(embedded_chunks)
 
     assert vector_store.client.collection_exists(vector_store.collection_name)

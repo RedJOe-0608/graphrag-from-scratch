@@ -1,7 +1,6 @@
-from ollama import Client
+from openai import OpenAI
 from pydantic import BaseModel
 
-from app.config.app_config import OllamaConfig
 from app.config.graph_schema import GraphSchema
 from app.extraction.extractor import Extractor
 from app.extraction.prompt_builder import build_prompt
@@ -14,24 +13,23 @@ from app.graph.extracted_knowledge import ExtractedKnowledge
 from app.models.chunk import Chunk
 
 
-class OllamaExtractor(Extractor):
+class OpenAIExtractor(Extractor):
     def __init__(
         self,
-        config: OllamaConfig,
         schema: GraphSchema,
-        client: Client | None = None,
+        model: str = "gpt-4o-mini",
+        api_key: str | None = None,
     ):
         self.schema = schema
-        self.model = config.model
-        self.client = client or Client(
-            host=config.host,
-        )
+        self.model = model
+        # api_key=None -> the SDK reads OPENAI_API_KEY from the environment.
+        self.client = OpenAI(api_key=api_key)
         self.response_model = build_extracted_knowledge_response(schema)
 
     def extract(self, chunk: Chunk) -> ExtractedKnowledge:
         prompt = build_prompt(chunk, self.schema)
 
-        response = self.client.chat(
+        completion = self.client.beta.chat.completions.parse(
             model=self.model,
             messages=[
                 {
@@ -41,44 +39,25 @@ class OllamaExtractor(Extractor):
                         "Return only valid JSON matching the provided schema."
                     ),
                 },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
+                {"role": "user", "content": prompt},
             ],
-            format=self.response_model.model_json_schema(), # generates the rulebook for ollama's constrained decoding.
-            options={
-                "temperature": 0,
-            },
+            response_format=self.response_model,
+            temperature=0,
         )
 
-        # 1. The model hit max_token limit. So incomplete json response.
-        # 2. Network failure. 
-        # In both of the cases above, the model_validate_json would raise Pydantic's own ValidationError
-        try:
-            validated_response = self.response_model.model_validate_json(
-                response.message.content
-            )
-        except Exception as e:
-            raise ValueError(
-                "Failed to parse Ollama response:\n\n"
-                f"{response.message.content}"
-            ) from e
-
-        entities = self._build_entities(validated_response, chunk.id)
+        validated = completion.choices[0].message.parsed
+        entities = self._build_entities(validated, chunk.id)
 
         return ExtractedKnowledge(
             source_chunk=chunk,
             entities=entities,
-            relationships=build_valid_relationships(
-                validated_response, entities, self.schema
-            ),
+            relationships=build_valid_relationships(validated, entities, self.schema),
         )
 
     @staticmethod
     def _build_entities(
         validated_response: BaseModel,
-        chunk_id: str
+        chunk_id: str,
     ) -> list[Entity]:
         return [
             Entity(
@@ -86,7 +65,7 @@ class OllamaExtractor(Extractor):
                 name=entity.name,
                 entity_type=entity.entity_type,
                 description=entity.description,
-                source_chunk_ids=[chunk_id]
+                source_chunk_ids=[chunk_id],
             )
             for entity in validated_response.entities
         ]

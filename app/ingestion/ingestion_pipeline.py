@@ -1,9 +1,9 @@
 from app.chunking.chunker import Chunker
 from app.embeddings.embedder import Embedder
 from app.extraction.extractor import Extractor
-from app.graph_store.graph_store import GraphStore
 from app.ingestion.ingestion_result import IngestionResult
 from app.parsing.parser import Parser
+from app.resolution.entity_resolver import EntityResolver
 from app.vector_store.vector_store import VectorStore
 
 # this pipeline is a thin orchestrator. It only knows the order in which to call.
@@ -15,19 +15,19 @@ class IngestionPipeline:
         embedder: Embedder,
         extractor: Extractor,
         vector_store: VectorStore,
-        graph_store: GraphStore,
+        resolver: EntityResolver,
     ):
         self.parser = parser
         self.chunker = chunker
         self.embedder = embedder
         self.extractor = extractor
         self.vector_store = vector_store
-        self.graph_store = graph_store
+        self.resolver = resolver
 
     def ingest(self, path: str) -> IngestionResult:
         document = self.parser.parse(path)
         chunks = self.chunker.chunk(document)
-        embedded_chunks = self.embedder.embed(chunks)
+        embedded_chunks = self.embedder.embed_chunk(chunks)
         self.vector_store.add(embedded_chunks)
 
         entity_count = 0
@@ -37,13 +37,13 @@ class IngestionPipeline:
         for chunk in chunks:
             try:
                 knowledge = self.extractor.extract(chunk)
-                self.graph_store.add(knowledge)
+                relationships_written = self.resolver.resolve_knowledge(knowledge)
             except ValueError as e:
                 failures.append(f"chunk {chunk.id}: {e}")
                 continue
 
             entity_count += len(knowledge.entities)
-            relationship_count +=len(knowledge.relationships)
+            relationship_count += relationships_written
 
         return IngestionResult(
             document=document,
