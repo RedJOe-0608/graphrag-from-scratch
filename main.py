@@ -12,6 +12,8 @@ from app.parsing.docling_parser import DoclingParser
 from app.resolution.entity_resolver import EntityResolver
 from app.resolution.ollama_entity_matcher import OllamaEntityMatcher
 from app.resolution.openai_entity_matcher import OpenAIEntityMatcher
+from app.generation.context_builder import build_context
+from app.generation.openai_answer_generator import OpenAIAnswerGenerator
 from app.retrieval.graph_retriever import GraphRetriever
 from app.retrieval.hybrid_retriever import HybridRetriever
 from app.retrieval.vector_retriever import VectorRetriever
@@ -93,6 +95,12 @@ def main():
         print(f"Retrieved {len(chunks)} chunk(s):\n")
         for chunk in chunks:
             print(f"[{chunk.id}]\n{chunk.text}\n")
+
+        context = build_context(chunks)
+        generator = OpenAIAnswerGenerator(model="gpt-4o-mini")
+        answer = generator.generate(query, context)
+
+        print(f"Answer:\n{answer}\n")
 
         return
 

@@ -35,8 +35,8 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 | **Vector retriever** (`Retriever` ABC + `VectorRetriever`) | **Done** |
 | **Graph retriever** (`GraphRetriever`, `QueryEntityExtractor`) | **Done** |
 | **Hybrid Retrieval + RRF** (`HybridRetriever`) | **Done** |
-| Reranking | Not started |
-| Answer Generation | Not started |
+| Reranking | Deferred (see Roadmap) |
+| **Context Builder + Answer Generation** (`build_context`, `OpenAIAnswerGenerator`) | **Done** |
 
 **Testing note:** per user direction (2026-07-03), the project is prioritizing end-to-end functionality over test coverage for now — tests are fixed only when they block forward progress, not proactively expanded per feature. A dedicated testing pass will happen once the app works end-to-end.
 
@@ -178,11 +178,19 @@ Phase 2 built and validated end-to-end across two documents. **The implementatio
   2. For each retriever's ranked list, accumulates `1 / (rrf_k + rank)` per chunk id into a running score, keyed by `chunk.id` (a side dict maps id → `Chunk` since scores are tracked by id, not by object).
   3. Sorts ids by total score descending, takes the top `limit`, returns the corresponding `Chunk`s.
   - Verified end-to-end via `main.py --query` against the real Neo4j + Qdrant graph (Northwind Robotics sample data) — top result matched the query correctly, no errors.
+  - **Reranking deliberately skipped for now (2026-07-04)** — decided to build the full query→answer loop end-to-end first (context builder + generation) and only add a reranker later if bad chunks are observed reaching the LLM in practice; RRF's fused ranking was judged good enough to proceed without it.
+
+### Generation (`app/generation/`, 2026-07-04)
+- **`context_builder.py`** — `build_context(chunks: list[Chunk]) -> str`. Not an ABC (only one sane way to do this today) — joins chunk texts with a `[Source N]` tag per chunk so the LLM can distinguish/refer to individual sources. No context-window truncation logic yet (not hit in practice with `limit=5` short chunks; revisit if larger `limit`/chunk sizes make it a real constraint).
+- **`answer_generator.py`** — `AnswerGenerator` ABC: `generate(query, context) -> str`. Mirrors the `Extractor`/`Retriever` swappable-implementation pattern.
+- **`openai_answer_generator.py`** — `OpenAIAnswerGenerator(model="gpt-4o-mini")`. Builds the prompt via `answer_prompt_builder`, calls `chat.completions.create` (plain completion, not structured output — a free-text answer, no schema to constrain), `temperature=0`, returns the raw message content.
+- **`answer_prompt_builder.py`** — `build_answer_prompt(query, context) -> str`. Explicitly instructs the model to answer *only* from the given sources and to say so rather than guess if the sources are insufficient — this is what makes the system refuse-to-hallucinate rather than fall back on outside knowledge.
+- **Verified end-to-end** via `main.py --query` against the real graph: a grounded question ("Where is Northwind Robotics headquartered?") produced a correct, source-backed answer; two out-of-context questions ("Who is the CFO?", "What color is the Pathfinder 3?") both correctly triggered the "sources do not contain this information" refusal instead of hallucinating.
 
 ### Entry Point
 - **`main.py`** — **now the real composition root** (no longer a disconnected harness). Usage:
   - `python main.py [path/to/doc.pdf] [--clear]` — ingest a document (`--clear` wipes the Neo4j graph first). Wires `DoclingParser`/`DoclingChunker`/`OllamaEmbedder`/`OpenAIExtractor(gpt-4o)`/`QdrantVectorStore`/`Neo4jGraphStore` (computes `embedding_dimensions` from a real probe embedding) + `OpenAIEntityMatcher(gpt-4o)` + `EntityResolver` + `IngestionPipeline`, ingests, prints an `IngestionResult` receipt and per-entity resolution decisions.
-  - `python main.py --query "question" [--clear]` — query the graph instead of ingesting. Skips parser/chunker/extractor/resolver (not needed for querying) — wires `QueryEntityExtractor(gpt-4o-mini)` + `VectorRetriever` + `GraphRetriever` (reusing the same `CANDIDATE_K` constant as `EntityResolver`), then wraps both in a `HybridRetriever` (**updated 2026-07-04**, was `GraphRetriever` alone) and prints the fused, retrieved chunks. Verified end-to-end against the real graph.
+  - `python main.py --query "question" [--clear]` — query the graph instead of ingesting. Skips parser/chunker/extractor/resolver (not needed for querying) — wires `QueryEntityExtractor(gpt-4o-mini)` + `VectorRetriever` + `GraphRetriever` (reusing the same `CANDIDATE_K` constant as `EntityResolver`), wraps both in a `HybridRetriever`, prints the fused retrieved chunks, then (**added 2026-07-04**) builds context via `build_context` and calls `OpenAIAnswerGenerator(gpt-4o-mini)` to print a final grounded answer. Full query→answer loop now verified end-to-end against the real graph.
   - Both modes load `.env` and share the same `embedder`/`vector_store`/`graph_store` construction.
 
 ---
@@ -269,7 +277,7 @@ Placeholder directories exist for all of these (empty, no code yet):
 5. ~~Graph retriever~~ — **done 2026-07-04** (`GraphRetriever` + `QueryEntityExtractor`; entity-anchored 1-hop traversal; verified end-to-end against Neo4j via `main.py --query`)
 6. ~~Hybrid retrieval~~ — **done 2026-07-04** (`HybridRetriever`, fuses `VectorRetriever` + `GraphRetriever`)
 7. ~~RRF~~ — **done 2026-07-04** (reciprocal rank fusion, `rrf_k=60`, `fetch_multiplier=4`; see `HybridRetriever` above)
-8. Reranker ← next
-9. Context builder
-10. Answer generation
-11. GraphRAGEngine
+8. Reranker — **deferred 2026-07-04**, revisit only if bad chunks are observed reaching the LLM in practice
+9. ~~Context builder~~ — **done 2026-07-04** (`build_context`)
+10. ~~Answer generation~~ — **done 2026-07-04** (`AnswerGenerator` ABC + `OpenAIAnswerGenerator`; full query→answer loop verified end-to-end via `main.py --query`, including correct refusal on out-of-context questions)
+11. **GraphRAGEngine** ← next
