@@ -26,4 +26,9 @@ class VectorStore(ABC):
         """
         pass
 
-    
+    @abstractmethod
+    def clear(self) -> None:
+        """
+        Remove all stored chunks.
+        """
+        pass

@@ -102,3 +102,7 @@ class QdrantVectorStore(VectorStore):
             )
             for point in points
         ]
+
+    def clear(self) -> None:
+        if self.client.collection_exists(self.collection_name):
+            self.client.delete_collection(self.collection_name)

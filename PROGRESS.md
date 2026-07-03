@@ -37,6 +37,7 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 | **Hybrid Retrieval + RRF** (`HybridRetriever`) | **Done** |
 | Reranking | Deferred (see Roadmap) |
 | **Context Builder + Answer Generation** (`build_context`, `OpenAIAnswerGenerator`) | **Done** |
+| **GraphRAGEngine** (facade over ingestion + hybrid retrieval + generation) | **Done** |
 
 **Testing note:** per user direction (2026-07-03), the project is prioritizing end-to-end functionality over test coverage for now — tests are fixed only when they block forward progress, not proactively expanded per feature. A dedicated testing pass will happen once the app works end-to-end.
 
@@ -186,12 +187,21 @@ Phase 2 built and validated end-to-end across two documents. **The implementatio
 - **`openai_answer_generator.py`** — `OpenAIAnswerGenerator(model="gpt-4o-mini")`. Builds the prompt via `answer_prompt_builder`, calls `chat.completions.create` (plain completion, not structured output — a free-text answer, no schema to constrain), `temperature=0`, returns the raw message content.
 - **`answer_prompt_builder.py`** — `build_answer_prompt(query, context) -> str`. Explicitly instructs the model to answer *only* from the given sources and to say so rather than guess if the sources are insufficient — this is what makes the system refuse-to-hallucinate rather than fall back on outside knowledge.
 - **Verified end-to-end** via `main.py --query` against the real graph: a grounded question ("Where is Northwind Robotics headquartered?") produced a correct, source-backed answer; two out-of-context questions ("Who is the CFO?", "What color is the Pathfinder 3?") both correctly triggered the "sources do not contain this information" refusal instead of hallucinating.
+- **`query_result.py`** — `QueryResult` dataclass: `query`, `answer`, `chunks: list[Chunk]` — the query-side counterpart to `IngestionResult`, returned by `GraphRAGEngine.query()`.
+
+### Engine (`app/engine/`, 2026-07-04)
+- **`graph_rag_engine.py`** — `GraphRAGEngine(ingestion_pipeline, retriever, answer_generator, graph_store)`. A thin facade over the three previously-separate flows that `main.py` used to orchestrate inline:
+  - `ingest(document_path) -> IngestionResult` — delegates straight to `IngestionPipeline.ingest`.
+  - `query(query, limit=5) -> QueryResult` — `retriever.retrieve()` → `build_context()` → `answer_generator.generate()`, packaged into a `QueryResult`.
+  - `clear() -> None` — delegates to `graph_store.clear()`.
+  - Takes a `Retriever` (not a concrete `HybridRetriever`), an `AnswerGenerator` (not a concrete `OpenAIAnswerGenerator`), and an `IngestionPipeline`/`GraphStore` — same swappable-ABC pattern as the rest of the codebase; the engine doesn't know or care which concrete implementations it was handed.
+  - Deliberately holds no config/model-name knowledge itself — all wiring (which retrievers, which model, `CANDIDATE_K`, etc.) stays in the composition root (`main.py`'s `build_engine()`), keeping the engine a pure orchestrator.
 
 ### Entry Point
-- **`main.py`** — **now the real composition root** (no longer a disconnected harness). Usage:
-  - `python main.py [path/to/doc.pdf] [--clear]` — ingest a document (`--clear` wipes the Neo4j graph first). Wires `DoclingParser`/`DoclingChunker`/`OllamaEmbedder`/`OpenAIExtractor(gpt-4o)`/`QdrantVectorStore`/`Neo4jGraphStore` (computes `embedding_dimensions` from a real probe embedding) + `OpenAIEntityMatcher(gpt-4o)` + `EntityResolver` + `IngestionPipeline`, ingests, prints an `IngestionResult` receipt and per-entity resolution decisions.
-  - `python main.py --query "question" [--clear]` — query the graph instead of ingesting. Skips parser/chunker/extractor/resolver (not needed for querying) — wires `QueryEntityExtractor(gpt-4o-mini)` + `VectorRetriever` + `GraphRetriever` (reusing the same `CANDIDATE_K` constant as `EntityResolver`), wraps both in a `HybridRetriever`, prints the fused retrieved chunks, then (**added 2026-07-04**) builds context via `build_context` and calls `OpenAIAnswerGenerator(gpt-4o-mini)` to print a final grounded answer. Full query→answer loop now verified end-to-end against the real graph.
-  - Both modes load `.env` and share the same `embedder`/`vector_store`/`graph_store` construction.
+- **`main.py`** — **the composition root** (no longer a disconnected harness). **Refactored 2026-07-04**: all component wiring extracted into `build_engine(config, schema) -> GraphRAGEngine`; `main()` is now a thin CLI that parses args and calls `engine.clear()` / `engine.query()` / `engine.ingest()`. Usage:
+  - `python main.py [path/to/doc.pdf] [--clear]` — ingest a document (`--clear` wipes the Neo4j graph first via `engine.clear()`). `build_engine()` wires `DoclingParser`/`DoclingChunker`/`OllamaEmbedder`/`OpenAIExtractor(gpt-4o)`/`QdrantVectorStore`/`Neo4jGraphStore` (computes `embedding_dimensions` from a real probe embedding) + `OpenAIEntityMatcher(gpt-4o)` + `EntityResolver` + `IngestionPipeline`; `main()` prints the returned `IngestionResult` receipt.
+  - `python main.py --query "question" [--clear]` — query the graph instead of ingesting. `build_engine()` also wires `QueryEntityExtractor(gpt-4o-mini)` + `VectorRetriever` + `GraphRetriever` (reusing the same `CANDIDATE_K` constant as `EntityResolver`) wrapped in a `HybridRetriever`, plus `OpenAIAnswerGenerator(gpt-4o-mini)`; `main()` calls `engine.query()` and prints the retrieved chunks + final grounded answer from the returned `QueryResult`. Full query→answer loop verified end-to-end against the real graph after the refactor.
+  - Both modes load `.env` and share one `GraphRAGEngine` instance (built once per process) rather than constructing components ad hoc per branch.
 
 ---
 
@@ -280,4 +290,4 @@ Placeholder directories exist for all of these (empty, no code yet):
 8. Reranker — **deferred 2026-07-04**, revisit only if bad chunks are observed reaching the LLM in practice
 9. ~~Context builder~~ — **done 2026-07-04** (`build_context`)
 10. ~~Answer generation~~ — **done 2026-07-04** (`AnswerGenerator` ABC + `OpenAIAnswerGenerator`; full query→answer loop verified end-to-end via `main.py --query`, including correct refusal on out-of-context questions)
-11. **GraphRAGEngine** ← next
+11. ~~GraphRAGEngine~~ — **done 2026-07-04** (`GraphRAGEngine` facade; `main.py` refactored into a thin CLI over it — see `app/engine/` above)

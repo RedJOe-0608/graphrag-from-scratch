@@ -4,16 +4,15 @@ from app.chunking.docling_chunker import DoclingChunker
 from app.config.app_config_loader import load_app_config
 from app.config.graph_schema_loader import load_graph_schema
 from app.embeddings.ollama_embedder import OllamaEmbedder
+from app.engine.graph_rag_engine import GraphRAGEngine
 from app.extraction.openai_extractor import OpenAIExtractor
 from app.extraction.query_entity_extractor import QueryEntityExtractor
+from app.generation.openai_answer_generator import OpenAIAnswerGenerator
 from app.graph_store.neo4j_graph_store import Neo4jGraphStore
 from app.ingestion.ingestion_pipeline import IngestionPipeline
 from app.parsing.docling_parser import DoclingParser
 from app.resolution.entity_resolver import EntityResolver
-from app.resolution.ollama_entity_matcher import OllamaEntityMatcher
 from app.resolution.openai_entity_matcher import OpenAIEntityMatcher
-from app.generation.context_builder import build_context
-from app.generation.openai_answer_generator import OpenAIAnswerGenerator
 from app.retrieval.graph_retriever import GraphRetriever
 from app.retrieval.hybrid_retriever import HybridRetriever
 from app.retrieval.vector_retriever import VectorRetriever
@@ -30,6 +29,69 @@ LOW_THRESHOLD = 0.75
 CANDIDATE_K = 5
 
 DEFAULT_DOCUMENT = "tests/data/sample_graphrag_document.pdf"
+
+
+def build_engine(config, schema) -> GraphRAGEngine:
+    embedder = OllamaEmbedder()
+    vector_store = QdrantVectorStore(config=config.qdrant)
+
+    # Derive the embedding dimensionality from a real embedding call rather than
+    # hardcoding it — the graph store's vector index needs this at construction.
+    embedding_dimensions = len(embedder.embed_text(["probe"])[0])
+
+    graph_store = Neo4jGraphStore(
+        config=config.neo4j,
+        schema=schema,
+        embedding_dimensions=embedding_dimensions,
+    )
+
+    parser = DoclingParser()
+    chunker = DoclingChunker()
+    extractor = OpenAIExtractor(schema=schema, model="gpt-4o-mini")
+
+    matcher = OpenAIEntityMatcher(model="gpt-4o-mini")
+    resolver = EntityResolver(
+        graph_store=graph_store,
+        embedder=embedder,
+        matcher=matcher,
+        low_threshold=LOW_THRESHOLD,
+        k=CANDIDATE_K,
+    )
+
+    ingestion_pipeline = IngestionPipeline(
+        parser=parser,
+        chunker=chunker,
+        embedder=embedder,
+        extractor=extractor,
+        vector_store=vector_store,
+        resolver=resolver,
+    )
+
+    query_extractor = QueryEntityExtractor(schema=schema, model="gpt-4o-mini")
+    vector_retriever = VectorRetriever(
+        vector_store=vector_store,
+        embedder=embedder,
+    )
+    graph_retriever = GraphRetriever(
+        graph_store=graph_store,
+        vector_store=vector_store,
+        embedder=embedder,
+        query_extractor=query_extractor,
+        k=CANDIDATE_K,
+    )
+    retriever = HybridRetriever(
+        retrievers=[vector_retriever, graph_retriever],
+    )
+
+    answer_generator = OpenAIAnswerGenerator(model="gpt-4o-mini")
+
+    return GraphRAGEngine(
+        ingestion_pipeline=ingestion_pipeline,
+        retriever=retriever,
+        answer_generator=answer_generator,
+        graph_store=graph_store,
+        vector_store=vector_store,
+    )
 
 
 def main():
@@ -55,78 +117,25 @@ def main():
     config = load_app_config("config/app.yaml")
     schema = load_graph_schema("config/graph.yaml")
 
-    embedder = OllamaEmbedder()
-    vector_store = QdrantVectorStore(config=config.qdrant)
-
-    # Derive the embedding dimensionality from a real embedding call rather than
-    # hardcoding it — the graph store's vector index needs this at construction.
-    embedding_dimensions = len(embedder.embed_text(["probe"])[0])
-
-    graph_store = Neo4jGraphStore(
-        config=config.neo4j,
-        schema=schema,
-        embedding_dimensions=embedding_dimensions,
-    )
+    engine = build_engine(config, schema)
 
     if should_clear:
-        graph_store.clear()
+        engine.clear()
         print("Cleared existing graph.\n")
 
     if query:
-        query_extractor = QueryEntityExtractor(schema=schema, model="gpt-4o-mini")
-        vector_retriever = VectorRetriever(
-            vector_store=vector_store,
-            embedder=embedder,
-        )
-        graph_retriever = GraphRetriever(
-            graph_store=graph_store,
-            vector_store=vector_store,
-            embedder=embedder,
-            query_extractor=query_extractor,
-            k=CANDIDATE_K,
-        )
-        retriever = HybridRetriever(
-            retrievers=[vector_retriever, graph_retriever],
-        )
+        result = engine.query(query)
 
-        chunks = retriever.retrieve(query)
-
-        print(f"\nQuery: {query}")
-        print(f"Retrieved {len(chunks)} chunk(s):\n")
-        for chunk in chunks:
+        print(f"\nQuery: {result.query}")
+        print(f"Retrieved {len(result.chunks)} chunk(s):\n")
+        for chunk in result.chunks:
             print(f"[{chunk.id}]\n{chunk.text}\n")
 
-        context = build_context(chunks)
-        generator = OpenAIAnswerGenerator(model="gpt-4o-mini")
-        answer = generator.generate(query, context)
-
-        print(f"Answer:\n{answer}\n")
+        print(f"Answer:\n{result.answer}\n")
 
         return
 
-    parser = DoclingParser()
-    chunker = DoclingChunker()
-    extractor = OpenAIExtractor(schema=schema, model="gpt-4o")
-
-    matcher = OpenAIEntityMatcher(model="gpt-4o")
-    resolver = EntityResolver(
-        graph_store=graph_store,
-        embedder=embedder,
-        matcher=matcher,
-        low_threshold=LOW_THRESHOLD,
-        k=CANDIDATE_K,
-    )
-
-    pipeline = IngestionPipeline(
-        parser=parser,
-        chunker=chunker,
-        embedder=embedder,
-        extractor=extractor,
-        vector_store=vector_store,
-        resolver=resolver,
-    )
-
-    result = pipeline.ingest(document_path)
+    result = engine.ingest(document_path)
 
     print(f"\nDocument:      {result.document.title}")
     print(f"Chunks:        {result.chunk_count}")
