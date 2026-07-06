@@ -5,12 +5,15 @@ A from-scratch GraphRAG system using local LLMs (Ollama), Qdrant (vector store),
 ## Architecture (planned pipeline)
 
 ```
-PDF → Document → Chunks → EmbeddedChunks → VectorStore
+PDF → Document → Chunks → EmbeddedChunks → VectorStore (Qdrant)
+                        → Chunks         → KeywordStore (BM25)
                         → ExtractedKnowledge → GraphStore (Neo4j)
                                           ↓
-                              Hybrid Retrieval (vector + graph)
+                 Hybrid Retrieval (vector + keyword + graph)
                                           ↓
-                              RRF → Reranker → LLM → Answer
+        RRF → Cross-Encoder Reranker → top-k chunks ┐
+                                                     ├→ LLM → Answer
+        Graph facts (relationships, same walk) ──────┘
 ```
 
 ---
@@ -35,9 +38,12 @@ PDF → Document → Chunks → EmbeddedChunks → VectorStore
 | **Vector retriever** (`Retriever` ABC + `VectorRetriever`) | **Done** |
 | **Graph retriever** (`GraphRetriever`, `QueryEntityExtractor`) | **Done** |
 | **Hybrid Retrieval + RRF** (`HybridRetriever`) | **Done** |
-| Reranking | Deferred (see Roadmap) |
+| **Keyword Retrieval** (`BM25KeywordStore`, `KeywordRetriever`) | **Done** |
+| **Reranking** (`CrossEncoderReranker`, `RerankingRetriever`) | **Done (2026-07-06)** |
+| **Graph facts as context** (`GraphTraversal`, relationships → LLM) | **Done (2026-07-06)** |
 | **Context Builder + Answer Generation** (`build_context`, `OpenAIAnswerGenerator`) | **Done** |
 | **GraphRAGEngine** (facade over ingestion + hybrid retrieval + generation) | **Done** |
+| **RAG Evaluation** (faithfulness, answer relevance, context precision/recall) | **Done** |
 
 **Testing note:** per user direction (2026-07-03), the project is prioritizing end-to-end functionality over test coverage for now — tests are fixed only when they block forward progress, not proactively expanded per feature. A dedicated testing pass will happen once the app works end-to-end.
 
@@ -197,23 +203,62 @@ Phase 2 built and validated end-to-end across two documents. **The implementatio
   - Takes a `Retriever` (not a concrete `HybridRetriever`), an `AnswerGenerator` (not a concrete `OpenAIAnswerGenerator`), and an `IngestionPipeline`/`GraphStore` — same swappable-ABC pattern as the rest of the codebase; the engine doesn't know or care which concrete implementations it was handed.
   - Deliberately holds no config/model-name knowledge itself — all wiring (which retrievers, which model, `CANDIDATE_K`, etc.) stays in the composition root (`main.py`'s `build_engine()`), keeping the engine a pure orchestrator.
 
+### Keyword Retrieval (`app/keyword_store/`, `app/retrieval/`)
+- **`keyword_store.py`** — `KeywordStore` ABC (`add`, `search`, `clear`), same swappable-ABC pattern as the vector/graph stores.
+- **`bm25_keyword_store.py`** — `BM25KeywordStore(config: KeywordConfig)`; BM25 sparse index (via `rank-bm25`) persisted to `config.index_path` (`.keyword_index/bm25.pkl`). The IR-sense sparse half of hybrid retrieval — exact-token matching (rare names, product codes, acronyms) where dense embeddings are weak.
+- **`keyword_retriever.py`** — `KeywordRetriever(keyword_store)`; implements the `Retriever` ABC so it fuses into `HybridRetriever` by RRF like the others. The hybrid retriever now fuses **three** sources: `[VectorRetriever, KeywordRetriever, GraphRetriever]`.
+- **`KeywordConfig`** (`app_config.py`) — `index_path`; wired through `app.yaml`'s `keyword:` block.
+
+### Reranking (`app/reranking/`, 2026-07-06)
+Two-stage retrieval — RRF (cheap) narrows a wide candidate pool, then a cross-encoder (expensive) rescores it. RRF was **kept, not discarded**: it's pure arithmetic (`1/(k+rank)`), so it does the cheap fusion and the reranker only ever scores the ~20 survivors, never the whole corpus.
+- **`reranker.py`** — `Reranker` ABC: `rerank(query, chunks, limit) -> list[Chunk]`.
+- **`cross_encoder_reranker.py`** — `CrossEncoderReranker(model="cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)`. Uses `transformers` directly (already a dependency — no new package): `AutoModelForSequenceClassification` + `AutoTokenizer`, scores each `(query, chunk)` pair in one batched forward pass, sorts, returns top `limit`. Unlike the retrievers' bi-encoders (query and chunk embedded separately), the cross-encoder reads both together → sharper relevance at the cost of one forward pass per chunk, which is why it's gated behind RRF's shortlist. Handles empty/single-chunk inputs. Model downloads once (~80 MB) then caches.
+- **`reranking_retriever.py`** — `RerankingRetriever(retriever, reranker, candidate_pool=20)`, a **decorator** over any `Retriever`. Asks the inner retriever for `candidate_pool` chunks (so `HybridRetriever` stays untouched — RRF intact), reranks down to `limit`. The engine's top-level retriever is now `RerankingRetriever(HybridRetriever([...]))`.
+- **`RerankConfig`** (`app_config.py`) — `model`, `candidate_pool`; wired through `app.yaml`'s `reranker:` block.
+- The funnel: **80 per source → RRF fuse → top 20 → rerank → top 5**.
+
+### Graph Facts — relationships as LLM context (2026-07-06)
+Previously the graph was only a third way to find *chunks* — the walk followed relationships purely to collect chunk ids, then **discarded the edges**. Now those edges are surfaced to the LLM directly, so it can state facts the graph already knows (`Kevin Scott --WORKS_AT--> Microsoft`) instead of re-deriving them from prose.
+- **`app/graph/graph_fact.py`** — `GraphFact` (frozen dataclass): `source`, `relationship_type`, `target`, `description` — an oriented, readable triple. Frozen so facts dedupe in a set.
+- **`get_relationships` extended** — the Neo4j Cypher now also returns `r.description` (the edge's own explanation); base ABC docstring updated to the fuller returned shape.
+- **`context_builder.py`** — `build_context(chunks, facts=None)` now renders a `## Graph Facts` block (`- source --TYPE--> target (description)`) above the `## Sources` block. `answer_prompt_builder`'s wrapper heading changed `## Sources` → `## Context` so build_context owns the internal structure (no nested/duplicate headers).
+- **`query_result.py`** — `QueryResult` gained a `facts: list[GraphFact]` field for visibility; `main.py --query` prints the facts block.
+
+**The redundancy fix (the important design point).** Both the chunk side and the fact side need the *same* graph walk (entities → anchors → relationships, incl. one LLM query-entity extraction). Doing it twice was wasteful; a separate `GraphFactRetriever` (built, then **deleted**) was the wrong shape. The walk was extracted into one shared object:
+- **`app/retrieval/graph_traversal.py`** — `GraphTraversal.traverse(query) -> GraphTraversalResult(chunk_id_counts, facts)`. The single walk, producing **both** outputs. Memoizes the most-recent query so the two consumers (GraphRetriever for chunks, the engine for facts) don't walk twice within one `engine.query()`. **The cache is correctness-independent** — `traverse()` returns the same result on a hit or a miss, so nothing depends on call order (documented in the class). Single-slot cache assumes one query at a time (true for the CLI; docstring flags the lock/per-query-key fix if ever run concurrently).
+- **`graph_retriever.py`** — now a **thin adapter** (~10 lines) over `GraphTraversal`: reads `chunk_id_counts.most_common(limit)` → `vector_store.get_by_ids`. No longer owns the walk. Still one of the three retrievers inside `HybridRetriever` (RRF).
+- **`GraphRAGEngine`** — holds the **same** `GraphTraversal` instance (shared with the chunk-side `GraphRetriever`) and reads `.traverse(query).facts` for context. This is why no second retriever is needed: the engine gets facts off the shared walk without reaching through the fused retriever stack. `graph_traversal` param is optional → facts default to `[]`.
+- **Supernode cap** — `GraphTraversal(max_facts=20)` bounds the facts fed to the LLM so a highly-connected anchor can't swamp the prompt/cost. Applied in fact collection **only**; chunk counting always sees the full walk. Wired via `MAX_GRAPH_FACTS` in `main.py`. (This restored a bound that was momentarily lost when `GraphFactRetriever`'s old `limit=15` was deleted.)
+- Net: **+1 shared class (`GraphTraversal`), −1 redundant class (`GraphFactRetriever`), −1 duplicate LLM extraction per query.**
+- Verified with fakes (no live stores): fact orientation (in-edges flip), dedup, single-walk sharing (extraction runs once for both consumers), cache busts on a new query, and the supernode cap (facts bounded at 20 while chunk counting saw all 500 edges). **Not yet run live** against real Neo4j/Qdrant, and no eval-measured lift yet.
+
+### RAG Evaluation (`app/evaluation/`)
+RAGAS-style metrics over a labeled eval set (`eval_set.json`), the quantitative measuring stick for later retrieval-quality changes. Each metric is its own package with an LLM-judge ABC + OpenAI implementation + prompt:
+- **`faithfulness/`** — answer claims supported by retrieved chunks (hallucination check): claim extraction → per-claim verdict against context.
+- **`answer_relevance/`** — does the answer address the question (question-generation + similarity).
+- **`context_precision/`** — are the retrieved chunks relevant (per-chunk relevance judge).
+- **`context_recall/`** — did retrieval fetch what's needed (attribution judge).
+- **`runner.py` / `metric.py` / `dataset.py` / `similarity.py`** — the harness, metric protocol, eval-set loading, and similarity helper.
+
 ### Entry Point
 - **`main.py`** — **the composition root** (no longer a disconnected harness). **Refactored 2026-07-04**: all component wiring extracted into `build_engine(config, schema) -> GraphRAGEngine`; `main()` is now a thin CLI that parses args and calls `engine.clear()` / `engine.query()` / `engine.ingest()`. Usage:
   - `python main.py [path/to/doc.pdf] [--clear]` — ingest a document (`--clear` wipes the Neo4j graph first via `engine.clear()`). `build_engine()` wires `DoclingParser`/`DoclingChunker`/`OllamaEmbedder`/`OpenAIExtractor(gpt-4o)`/`QdrantVectorStore`/`Neo4jGraphStore` (computes `embedding_dimensions` from a real probe embedding) + `OpenAIEntityMatcher(gpt-4o)` + `EntityResolver` + `IngestionPipeline`; `main()` prints the returned `IngestionResult` receipt.
-  - `python main.py --query "question" [--clear]` — query the graph instead of ingesting. `build_engine()` also wires `QueryEntityExtractor(gpt-4o-mini)` + `VectorRetriever` + `GraphRetriever` (reusing the same `CANDIDATE_K` constant as `EntityResolver`) wrapped in a `HybridRetriever`, plus `OpenAIAnswerGenerator(gpt-4o-mini)`; `main()` calls `engine.query()` and prints the retrieved chunks + final grounded answer from the returned `QueryResult`. Full query→answer loop verified end-to-end against the real graph after the refactor.
+  - `python main.py --query "question" [--clear]` — query the graph instead of ingesting. `build_engine()` also wires `QueryEntityExtractor(gpt-4o-mini)` + a shared `GraphTraversal` (feeding both the chunk-side `GraphRetriever` and the engine's fact channel) + `VectorRetriever` + `KeywordRetriever` + `GraphRetriever` fused in a `HybridRetriever`, wrapped in a `RerankingRetriever(CrossEncoderReranker, candidate_pool)`, plus `OpenAIAnswerGenerator(gpt-4o-mini)` and the `graph_traversal` handed to the engine for facts; `main()` calls `engine.query()` and prints the retrieved chunks, the `## Graph Facts`, and the final grounded answer from the returned `QueryResult`. (Reranking + graph-facts wiring added 2026-07-06; not yet re-verified live end-to-end.)
   - Both modes load `.env` and share one `GraphRAGEngine` instance (built once per process) rather than constructing components ad hoc per branch.
 
 ---
 
 ## Not Started
 
-Placeholder directories exist for all of these (empty, no code yet):
+- **`app/retrieval/`** — `Retriever` ABC + `VectorRetriever` + `KeywordRetriever` + `GraphRetriever` + `HybridRetriever` (RRF) + `RerankingRetriever` + `GraphTraversal` — **done**
+- **`app/reranking/`** — `Reranker` ABC + `CrossEncoderReranker` — **done (2026-07-06)**
+- **`app/generation/`** — answer generation via LLM — **done**
+- **`app/evaluation/`** — RAGAS-style metrics — **done**
 
-- **`app/retrieval/`** — `Retriever` ABC + `VectorRetriever` + `GraphRetriever` + `HybridRetriever` (RRF) **done**
-- **`app/reranking/`** — cross-encoder or LLM-based reranker
-- **`app/generation/`** — answer generation via LLM
+Still empty (no code yet):
 - **`app/utils/`** — shared utilities
 - **`app/database/`** — unclear purpose yet; empty
+- **`app/schema_induction/`** — exploratory schema induction (lives on `feature/schema-induction` branch, unwired)
 
 ---
 
@@ -240,7 +285,9 @@ Placeholder directories exist for all of these (empty, no code yet):
 |---|---|
 | `pymupdf` | PDF parsing (PDFParser) |
 | `docling` | Layout-aware PDF parsing with table extraction (DoclingParser) |
-| `transformers` | Tokenizer for token-accurate chunk size measurement |
+| `transformers` | Tokenizer for token-accurate chunk sizing **+ cross-encoder reranker** (`AutoModelForSequenceClassification`) |
+| `torch` | Backs the cross-encoder reranker forward pass |
+| `rank-bm25` | BM25 sparse keyword index (`BM25KeywordStore`) |
 | `ollama` | Embedding + extraction (structured JSON) + (future) answer generation |
 | `qdrant-client` | Vector store |
 | `neo4j` | Graph store driver |
@@ -287,7 +334,7 @@ Placeholder directories exist for all of these (empty, no code yet):
 5. ~~Graph retriever~~ — **done 2026-07-04** (`GraphRetriever` + `QueryEntityExtractor`; entity-anchored 1-hop traversal; verified end-to-end against Neo4j via `main.py --query`)
 6. ~~Hybrid retrieval~~ — **done 2026-07-04** (`HybridRetriever`, fuses `VectorRetriever` + `GraphRetriever`)
 7. ~~RRF~~ — **done 2026-07-04** (reciprocal rank fusion, `rrf_k=60`, `fetch_multiplier=4`; see `HybridRetriever` above)
-8. Reranker — **deferred 2026-07-04**, revisit only if bad chunks are observed reaching the LLM in practice
+8. ~~Reranker~~ — **done 2026-07-06** (`CrossEncoderReranker` + `RerankingRetriever` decorator; RRF kept as the cheap pre-filter, cross-encoder rescores the top ~20 → 5)
 9. ~~Context builder~~ — **done 2026-07-04** (`build_context`)
 10. ~~Answer generation~~ — **done 2026-07-04** (`AnswerGenerator` ABC + `OpenAIAnswerGenerator`; full query→answer loop verified end-to-end via `main.py --query`, including correct refusal on out-of-context questions)
 11. ~~GraphRAGEngine~~ — **done 2026-07-04** (`GraphRAGEngine` facade; `main.py` refactored into a thin CLI over it — see `app/engine/` above)
@@ -298,11 +345,11 @@ Placeholder directories exist for all of these (empty, no code yet):
 
 The full end-to-end loop works; the next phase focuses on **measurement, retrieval quality, robustness, and new capabilities**. Chosen order and rationale:
 
-1. **RAG evaluation metrics** — *built first, deliberately*, so every later change gets a number attached instead of being judged by feel. A quantitative measuring stick for answer/retrieval quality. RAGAS-style metrics: faithfulness (answer supported by retrieved chunks, no hallucination), answer relevance, context precision/recall (did retrieval fetch the right chunks, miss any). Requires a small labeled eval set (~20–50 questions over the sample docs with known-good answers / expected chunks). This is the baseline against which #2 (sparse) and #3 (reranking) prove their lift.
+1. ~~**RAG evaluation metrics**~~ — **done** (`app/evaluation/`: RAGAS-style faithfulness, answer relevance, context precision/recall over `eval_set.json`). The baseline against which #2/#3 prove their lift. *Lift not yet measured against reranking + graph-facts — that's the immediate next step.*
 
-2. **Sparse / keyword retrieval** — add a BM25/sparse-vector retriever alongside the existing dense `VectorRetriever`. This is "hybrid" in the *IR* sense (dense + sparse), distinct from this project's current dense-vector + graph "hybrid." Dense embeddings are weak at exact-token matching (rare names, product codes, acronyms, exact phrases); sparse fixes that. Slots in behind the existing `Retriever` ABC and is fused by RRF for free. (Note: named-entity exact matches are already partly handled by `GraphRetriever`'s entity linking; sparse mainly helps non-entity keyword hits in chunk text.) Qdrant supports sparse vectors natively.
+2. ~~**Sparse / keyword retrieval**~~ — **done** (`BM25KeywordStore` + `KeywordRetriever`, fused into `HybridRetriever` by RRF as the third source). IR-sense hybrid (dense + sparse + graph).
 
-3. **Reranking** — add a cross-encoder reranker as a precision funnel after retrieval. Current retrievers are bi-encoders (query and chunk embedded separately, fast but miss fine-grained relevance). A cross-encoder reads `[query + chunk]` together and scores relevance far more accurately, but is slow — so retrieval over-fetches a candidate pool (~20–50) and the reranker reorders it down to the top ~5 that reach the LLM. Fills the placeholder `app/reranking/` directory. Insurance that the best chunk actually reaches the generator instead of being ranked just outside `limit`.
+3. ~~**Reranking**~~ — **done 2026-07-06** (`CrossEncoderReranker` + `RerankingRetriever`; over-fetch ~20 via RRF, cross-encoder down to top 5). See Completed above.
 
 4. **Integration tests** — a dedicated testing pass now that the app works end-to-end (the deferral condition in the Testing note is met). Tests at various pipeline stages assert *mechanical* correctness (runs without crashing, contracts honored, ingestion yields >0 entities/relationships, retrieval returns chunks). Distinct from eval (#1): tests catch the pipeline *breaking*, eval catches it getting *worse* without breaking.
 
