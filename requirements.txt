@@ -1,4 +1,7 @@
 accelerate==1.14.0
+fastapi==0.139.0
+streamlit==1.59.0
+uvicorn==0.50.2
 annotated-doc==0.0.4
 annotated-types==0.7.0
 antlr4-python3-runtime==4.9.3
