@@ -25,8 +25,14 @@ class KeywordConfig:
     index_path: str
 
 @dataclass
+class RerankConfig:
+    model: str
+    candidate_pool: int
+
+@dataclass
 class AppConfig:
     neo4j: Neo4jConfig
     ollama: OllamaConfig
     qdrant: QdrantConfig
     keyword: KeywordConfig
+    reranker: RerankConfig

@@ -14,3 +14,7 @@ qdrant:
 
 keyword:
   index_path: .keyword_index/bm25.pkl
+
+reranker:
+  model: cross-encoder/ms-marco-MiniLM-L-6-v2
+  candidate_pool: 20

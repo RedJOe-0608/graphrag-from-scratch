@@ -12,11 +12,13 @@ from app.graph_store.neo4j_graph_store import Neo4jGraphStore
 from app.ingestion.ingestion_pipeline import IngestionPipeline
 from app.keyword_store.bm25_keyword_store import BM25KeywordStore
 from app.parsing.docling_parser import DoclingParser
+from app.reranking.cross_encoder_reranker import CrossEncoderReranker
 from app.resolution.entity_resolver import EntityResolver
 from app.resolution.openai_entity_matcher import OpenAIEntityMatcher
 from app.retrieval.graph_retriever import GraphRetriever
 from app.retrieval.hybrid_retriever import HybridRetriever
 from app.retrieval.keyword_retriever import KeywordRetriever
+from app.retrieval.reranking_retriever import RerankingRetriever
 from app.retrieval.vector_retriever import VectorRetriever
 from app.vector_store.qdrant_vector_store import QdrantVectorStore
 
@@ -84,8 +86,18 @@ def build_engine(config, schema) -> GraphRAGEngine:
         query_extractor=query_extractor,
         k=CANDIDATE_K,
     )
-    retriever = HybridRetriever(
+    hybrid_retriever = HybridRetriever(
         retrievers=[vector_retriever, keyword_retriever, graph_retriever],
+    )
+
+    # RRF fusion is cheap, so we keep it as the first stage: it fuses the three
+    # retrievers' results into a broad candidate pool, which the cross-encoder
+    # reranker then rescores to pick the final chunks.
+    reranker = CrossEncoderReranker(model=config.reranker.model)
+    retriever = RerankingRetriever(
+        retriever=hybrid_retriever,
+        reranker=reranker,
+        candidate_pool=config.reranker.candidate_pool,
     )
 
     answer_generator = OpenAIAnswerGenerator(model="gpt-4o-mini")

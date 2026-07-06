@@ -6,6 +6,7 @@ from app.config.app_config import (
     Neo4jConfig,
     OllamaConfig,
     QdrantConfig,
+    RerankConfig,
 )
 
 
@@ -17,5 +18,6 @@ def load_app_config(path: str) -> AppConfig:
         neo4j=Neo4jConfig(**config["neo4j"]),
         ollama=OllamaConfig(**config["ollama"]),
         qdrant=QdrantConfig(**config["qdrant"]),
-        keyword=KeywordConfig(**config["keyword"])
+        keyword=KeywordConfig(**config["keyword"]),
+        reranker=RerankConfig(**config["reranker"])
     )
