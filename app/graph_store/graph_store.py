@@ -51,7 +51,9 @@ class GraphStore(ABC):
     def get_relationships(self, entity_id: str) -> list[dict]:
         """
         Return the relationships connected to this entity, each as
-        {"direction": "out"|"in", "type": <rel_type>, "other_name": <neighbor name>}.
+        {"direction": "out"|"in", "type": <rel_type>, "description": <edge description>,
+         "other_id": <neighbor id>, "other_name": <neighbor name>,
+         "other_type": <neighbor type>, "other_source_chunk_ids": [<chunk id>, ...]}.
         """
         pass
 

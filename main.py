@@ -16,6 +16,7 @@ from app.reranking.cross_encoder_reranker import CrossEncoderReranker
 from app.resolution.entity_resolver import EntityResolver
 from app.resolution.openai_entity_matcher import OpenAIEntityMatcher
 from app.retrieval.graph_retriever import GraphRetriever
+from app.retrieval.graph_traversal import GraphTraversal
 from app.retrieval.hybrid_retriever import HybridRetriever
 from app.retrieval.keyword_retriever import KeywordRetriever
 from app.retrieval.reranking_retriever import RerankingRetriever
@@ -31,6 +32,10 @@ from dotenv import load_dotenv
 # threshold can safely auto-merge; the LLM is the sole arbiter.
 LOW_THRESHOLD = 0.75
 CANDIDATE_K = 5
+
+# Upper bound on relationship facts fed to the LLM per query, so a highly
+# connected entity can't swamp the prompt.
+MAX_GRAPH_FACTS = 20
 
 DEFAULT_DOCUMENT = "tests/data/sample_graphrag_document.pdf"
 
@@ -79,12 +84,19 @@ def build_engine(config, schema) -> GraphRAGEngine:
         embedder=embedder,
     )
     keyword_retriever = KeywordRetriever(keyword_store=keyword_store)
-    graph_retriever = GraphRetriever(
+
+    # One graph walk feeds two consumers: the GraphRetriever below (chunks, into
+    # RRF) and the engine (relationship facts, into the LLM context).
+    graph_traversal = GraphTraversal(
         graph_store=graph_store,
-        vector_store=vector_store,
         embedder=embedder,
         query_extractor=query_extractor,
         k=CANDIDATE_K,
+        max_facts=MAX_GRAPH_FACTS,
+    )
+    graph_retriever = GraphRetriever(
+        traversal=graph_traversal,
+        vector_store=vector_store,
     )
     hybrid_retriever = HybridRetriever(
         retrievers=[vector_retriever, keyword_retriever, graph_retriever],
@@ -109,6 +121,7 @@ def build_engine(config, schema) -> GraphRAGEngine:
         graph_store=graph_store,
         vector_store=vector_store,
         keyword_store=keyword_store,
+        graph_traversal=graph_traversal,
     )
 
 
@@ -148,6 +161,15 @@ def main():
         print(f"Retrieved {len(result.chunks)} chunk(s):\n")
         for chunk in result.chunks:
             print(f"[{chunk.id}]\n{chunk.text}\n")
+
+        if result.facts:
+            print(f"Graph facts ({len(result.facts)}):")
+            for fact in result.facts:
+                line = f"  {fact.source} --{fact.relationship_type}--> {fact.target}"
+                if fact.description:
+                    line += f" ({fact.description})"
+                print(line)
+            print()
 
         print(f"Answer:\n{result.answer}\n")
 
