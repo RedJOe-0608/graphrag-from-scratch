@@ -309,3 +309,25 @@ The full end-to-end loop works; the next phase focuses on **measurement, retriev
 5. **Leiden / community detection (global search)** — the biggest new capability. Microsoft GraphRAG has two query modes: *local search* (entity-anchored 1-hop traversal — already built as `GraphRetriever`) and *global search*, for broad "summarize the whole corpus / what are the main themes" questions the current system can't answer. Leiden is a community-detection algorithm that clusters the graph into densely-connected communities; an LLM summarizes each community, and broad questions map-reduce over those community summaries instead of raw chunks. High value (fills a real capability gap), higher effort.
 
 6. **Corrective / Self / Agentic RAG** — advanced control-flow patterns layered on top of RAG, done last (justified by the eval harness from #1). Corrective RAG (CRAG): grade retrieved chunks, take corrective action if poor. Self-RAG: model decides when to retrieve and critiques its own answer against sources. Agentic RAG: LLM plans multi-step retrieval — the most relevant here, since it would enable **multi-hop** questions the current 1-hop `GraphRetriever` can't answer.
+
+---
+
+## Productionization Track (added 2026-07-06)
+
+A **separate axis** from the quality track above. The six items above make the RAG *smarter*; this track makes it a *productionizable, trustworthy, operable service*. These two tracks run in parallel — do **not** reshuffle the quality track to accommodate this one. Eval (#1 above) is the shared foundation: it's the *offline* half of the same muscle whose *online* half is observability, and its faithfulness metric is itself a guardrail primitive — so building eval first pays off in both tracks.
+
+**Suggested sequence within this track** (each step depends on being able to *see* what the prior one produced): frontend → observability → LLM gateway → guardrails. Rationale: you can't judge a gateway or design guardrails until you can observe live traffic, and there's no live traffic until a frontend generates it.
+
+1. **Frontend** — even a thin one (Streamlit / simple API + minimal UI) is enough. Purpose is to make everything downstream *tangible*: it generates the real traffic that observability, gateway, and guardrails operate on.
+
+2. **Observability** — online tracing of the live pipeline, built on **OpenTelemetry** vocabulary (spans/traces are an OTel standard, not LLM-specific). Tooling in this space: LangSmith, Langfuse, Phoenix/Arize, OpenLLMetry. The ABC-per-stage architecture is ideal — each stage is a natural span boundary, so instrumentation drops in cleanly. Core concepts:
+   - **Span** — one timed unit of work (embed query, vector search, graph retrieval, rerank, LLM generate). Records start/end, inputs/outputs, metadata (tokens, cost, model).
+   - **Trace** — the full span tree for a single request; one user query = one trace.
+   - **Waterfall** — the visualization of a trace: spans as horizontal bars stacked by start time, so you *see* where latency goes at a glance (e.g. a 2s reranker bar against 50ms everywhere else).
+
+3. **LLM gateway** — consolidate the existing provider seam (Ollama/OpenAI already injected behind ABCs) into one routing/ops layer: routing, retries, fallback, cost/token tracking, key management. Fits the architecture naturally since providers are already abstracted; can be homegrown over the current abstractions or a tool like LiteLLM.
+
+4. **Guardrails** — a detection layer, split into two sides:
+   - **Input side** — **jailbreak** (adversarial input attacking the *model's own rules*) and **prompt injection** (instructions smuggled through *data* the model reads). Prompt injection is a **RAG-native** threat: retrieved chunks are untrusted text entering the prompt, so a poisoned corpus document can carry injected instructions. Also input PII detection.
+   - **Output side** — hallucination (faithfulness — overlaps directly with eval #1), toxicity, PII leakage.
+   Implemented as a classifier / small model / rules filter run before (input) and after (output) the LLM call.
