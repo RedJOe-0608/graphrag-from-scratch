@@ -11,3 +11,6 @@ qdrant:
   host: localhost
   port: 6333
   collection_name: graphrag
+
+keyword:
+  index_path: .keyword_index/bm25.pkl

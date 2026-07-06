@@ -4,6 +4,7 @@ from app.generation.query_result import QueryResult
 from app.graph_store.graph_store import GraphStore
 from app.ingestion.ingestion_pipeline import IngestionPipeline
 from app.ingestion.ingestion_result import IngestionResult
+from app.keyword_store.keyword_store import KeywordStore
 from app.retrieval.retriever import Retriever
 from app.vector_store.vector_store import VectorStore
 
@@ -16,12 +17,14 @@ class GraphRAGEngine:
         answer_generator: AnswerGenerator,
         graph_store: GraphStore,
         vector_store: VectorStore,
+        keyword_store: KeywordStore,
     ) -> None:
         self.ingestion_pipeline = ingestion_pipeline
         self.retriever = retriever
         self.answer_generator = answer_generator
         self.graph_store = graph_store
         self.vector_store = vector_store
+        self.keyword_store = keyword_store
 
     def ingest(self, document_path: str) -> IngestionResult:
         return self.ingestion_pipeline.ingest(document_path)
@@ -36,3 +39,4 @@ class GraphRAGEngine:
     def clear(self) -> None:
         self.graph_store.clear()
         self.vector_store.clear()
+        self.keyword_store.clear()

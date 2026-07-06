@@ -10,11 +10,13 @@ from app.extraction.query_entity_extractor import QueryEntityExtractor
 from app.generation.openai_answer_generator import OpenAIAnswerGenerator
 from app.graph_store.neo4j_graph_store import Neo4jGraphStore
 from app.ingestion.ingestion_pipeline import IngestionPipeline
+from app.keyword_store.bm25_keyword_store import BM25KeywordStore
 from app.parsing.docling_parser import DoclingParser
 from app.resolution.entity_resolver import EntityResolver
 from app.resolution.openai_entity_matcher import OpenAIEntityMatcher
 from app.retrieval.graph_retriever import GraphRetriever
 from app.retrieval.hybrid_retriever import HybridRetriever
+from app.retrieval.keyword_retriever import KeywordRetriever
 from app.retrieval.vector_retriever import VectorRetriever
 from app.vector_store.qdrant_vector_store import QdrantVectorStore
 
@@ -34,6 +36,7 @@ DEFAULT_DOCUMENT = "tests/data/sample_graphrag_document.pdf"
 def build_engine(config, schema) -> GraphRAGEngine:
     embedder = OllamaEmbedder()
     vector_store = QdrantVectorStore(config=config.qdrant)
+    keyword_store = BM25KeywordStore(config=config.keyword)
 
     # Derive the embedding dimensionality from a real embedding call rather than
     # hardcoding it — the graph store's vector index needs this at construction.
@@ -64,6 +67,7 @@ def build_engine(config, schema) -> GraphRAGEngine:
         embedder=embedder,
         extractor=extractor,
         vector_store=vector_store,
+        keyword_store=keyword_store,
         resolver=resolver,
     )
 
@@ -72,6 +76,7 @@ def build_engine(config, schema) -> GraphRAGEngine:
         vector_store=vector_store,
         embedder=embedder,
     )
+    keyword_retriever = KeywordRetriever(keyword_store=keyword_store)
     graph_retriever = GraphRetriever(
         graph_store=graph_store,
         vector_store=vector_store,
@@ -80,7 +85,7 @@ def build_engine(config, schema) -> GraphRAGEngine:
         k=CANDIDATE_K,
     )
     retriever = HybridRetriever(
-        retrievers=[vector_retriever, graph_retriever],
+        retrievers=[vector_retriever, keyword_retriever, graph_retriever],
     )
 
     answer_generator = OpenAIAnswerGenerator(model="gpt-4o-mini")
@@ -91,6 +96,7 @@ def build_engine(config, schema) -> GraphRAGEngine:
         answer_generator=answer_generator,
         graph_store=graph_store,
         vector_store=vector_store,
+        keyword_store=keyword_store,
     )
 
 
