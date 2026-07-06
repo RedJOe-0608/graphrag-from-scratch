@@ -1,0 +1,20 @@
+[
+  {
+    "question": "Who founded Acme Corp and in what year?",
+    "answer": "Acme Corp was founded in 2004 by Jane Doe.",
+    "contexts": [
+      "Acme Corp is a manufacturing company headquartered in Ohio. It was founded in 2004 by Jane Doe, who remains its CEO.",
+      "Acme Corp reported revenue of $4.2 million in 2023, up from $3.8 million in 2022."
+    ],
+    "ground_truth": "Acme Corp was founded by Jane Doe in 2004."
+  },
+  {
+    "question": "What was Acme Corp's revenue in 2023?",
+    "answer": "Acme Corp's revenue in 2023 was $4.2 million.",
+    "contexts": [
+      "Acme Corp reported revenue of $4.2 million in 2023, up from $3.8 million in 2022.",
+      "The company employs roughly 500 people across three facilities."
+    ],
+    "ground_truth": "In 2023, Acme Corp's revenue was $4.2 million."
+  }
+]
