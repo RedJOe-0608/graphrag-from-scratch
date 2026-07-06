@@ -13,6 +13,13 @@ API_URL = "http://localhost:8000/query"
 st.set_page_config(page_title="GraphRAG Chat", page_icon="🔎")
 st.title("🔎 GraphRAG Chat")
 
+# Number of final chunks the backend reranks down to and sends to the LLM.
+# Applies to the next question asked.
+with st.sidebar:
+    st.header("Settings")
+    limit = st.slider("Chunks retrieved (limit)", min_value=1, max_value=15, value=5)
+    st.caption("How many passages get reranked and sent to the LLM as context.")
+
 # Streamlit re-runs this whole script on every interaction, so the conversation
 # must live in session_state to survive re-runs.
 if "messages" not in st.session_state:
@@ -50,7 +57,9 @@ if prompt := st.chat_input("Ask a question about your documents..."):
     with st.chat_message("assistant"):
         try:
             with st.spinner("Retrieving and generating..."):
-                resp = requests.post(API_URL, json={"query": prompt}, timeout=180)
+                resp = requests.post(
+                    API_URL, json={"query": prompt, "limit": limit}, timeout=180
+                )
                 resp.raise_for_status()
                 data = resp.json()
         except requests.RequestException as exc:
