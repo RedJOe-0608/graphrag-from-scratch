@@ -20,9 +20,13 @@ class QdrantConfig:
     port: int
     collection_name: str
 
+@dataclass
+class KeywordConfig:
+    index_path: str
 
 @dataclass
 class AppConfig:
     neo4j: Neo4jConfig
     ollama: OllamaConfig
     qdrant: QdrantConfig
+    keyword: KeywordConfig

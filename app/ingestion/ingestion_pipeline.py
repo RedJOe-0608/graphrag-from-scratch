@@ -2,6 +2,7 @@ from app.chunking.chunker import Chunker
 from app.embeddings.embedder import Embedder
 from app.extraction.extractor import Extractor
 from app.ingestion.ingestion_result import IngestionResult
+from app.keyword_store.keyword_store import KeywordStore
 from app.parsing.parser import Parser
 from app.resolution.entity_resolver import EntityResolver
 from app.vector_store.vector_store import VectorStore
@@ -15,6 +16,7 @@ class IngestionPipeline:
         embedder: Embedder,
         extractor: Extractor,
         vector_store: VectorStore,
+        keyword_store: KeywordStore,
         resolver: EntityResolver,
     ):
         self.parser = parser
@@ -22,6 +24,7 @@ class IngestionPipeline:
         self.embedder = embedder
         self.extractor = extractor
         self.vector_store = vector_store
+        self.keyword_store = keyword_store
         self.resolver = resolver
 
     def ingest(self, path: str) -> IngestionResult:
@@ -29,6 +32,7 @@ class IngestionPipeline:
         chunks = self.chunker.chunk(document)
         embedded_chunks = self.embedder.embed_chunk(chunks)
         self.vector_store.add(embedded_chunks)
+        self.keyword_store.add(chunks)
 
         entity_count = 0
         relationship_count = 0

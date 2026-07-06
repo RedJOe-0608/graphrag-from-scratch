@@ -46,3 +46,6 @@ qdrant_storage/
 
 #dummy folder for testing purposes.
 /proof
+
+#the BM25 index
+.keyword_index/
